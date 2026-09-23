@@ -1,64 +1,85 @@
 import { GameInfo } from '../types'
 
 interface Props {
-  game:    GameInfo
-  index:   number
-  onPlay:  () => void
+  game:   GameInfo
+  index:  number
+  onPlay: () => void
+}
+
+const CAT_LABEL: Record<string, string> = {
+  classic: '⚔ Classic',
+  indian:  '🪔 Indian',
+  puzzle:  '🧩 Puzzle',
+}
+
+const CAT_COLOR: Record<string, string> = {
+  classic: 'rgba(155,42,68,0.7)',
+  indian:  'rgba(139,90,43,0.7)',
+  puzzle:  'rgba(35,92,58,0.7)',
 }
 
 export default function GameCard({ game, index, onPlay }: Props) {
   return (
     <div
-      className="group relative card-glass overflow-hidden cursor-pointer
-                 hover:border-white/25 hover:scale-[1.03] transition-all duration-300
-                 animate-slide-up"
-      style={{ animationDelay: `${index * 60}ms`, animationFillMode: 'both' }}
+      className="group relative rounded-xl overflow-hidden cursor-pointer
+                 transition-all duration-300 hover:-translate-y-1 animate-slide-up"
+      style={{
+        animationDelay: `${index * 55}ms`,
+        animationFillMode: 'both',
+        background: 'linear-gradient(160deg, rgba(42,21,9,0.92) 0%, rgba(22,10,4,0.97) 100%)',
+        border: '1px solid rgba(212,168,67,0.22)',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.55)',
+      }}
       onClick={onPlay}
     >
-      {/* gradient bg */}
-      <div className={`absolute inset-0 bg-gradient-to-br ${game.color} opacity-20
-                        group-hover:opacity-35 transition-opacity`} />
+      {/* Top gold accent line */}
+      <div className="h-0.5 w-full transition-all duration-300 group-hover:opacity-100 opacity-60"
+           style={{ background: 'linear-gradient(90deg,transparent,#d4a843,transparent)' }} />
 
-      {/* pattern watermark */}
-      <div className="absolute -right-4 -bottom-4 text-8xl opacity-10 select-none
-                       group-hover:opacity-20 transition-opacity">
+      {/* Watermark pattern */}
+      <div className="absolute -right-3 -bottom-3 text-7xl select-none pointer-events-none
+                      transition-opacity duration-300 opacity-[0.06] group-hover:opacity-[0.12]">
         {game.bgPattern}
       </div>
 
       <div className="relative p-5">
-        {/* top row */}
+        {/* Top row: emoji + category badge */}
         <div className="flex items-start justify-between mb-3">
-          <span className="text-4xl">{game.emoji}</span>
-          <span className={`badge text-[10px] uppercase tracking-wider
-            ${game.category === 'indian'  ? 'bg-orange-500/20 text-orange-300 border border-orange-500/20' :
-              game.category === 'puzzle'  ? 'bg-green-500/20  text-green-300  border border-green-500/20'  :
-                                            'bg-brand-500/20  text-brand-300  border border-brand-500/20'}`}>
-            {game.category}
-          </span>
+          <span className="text-4xl leading-none drop-shadow-lg">{game.emoji}</span>
+          <span className="badge-classical text-[10px]">{CAT_LABEL[game.category]}</span>
         </div>
 
-        <h3 className="font-semibold text-white text-lg mb-1 group-hover:text-brand-300
-                        transition-colors">
+        {/* Title */}
+        <h3 className="mb-1 text-base leading-snug transition-colors duration-200
+                       group-hover:text-gold-300"
+            style={{ fontFamily: 'Cinzel, Georgia, serif', fontWeight: 600, color: '#f5f0e8', letterSpacing: '0.03em' }}>
           {game.title}
         </h3>
-        <p className="text-white/50 text-xs leading-relaxed mb-4 line-clamp-2">
+
+        {/* Description */}
+        <p className="text-sm leading-relaxed mb-4 line-clamp-2"
+           style={{ color: 'rgba(245,240,232,0.5)', fontFamily: 'Crimson Text, Georgia, serif' }}>
           {game.description}
         </p>
 
-        {/* bottom meta */}
+        {/* Footer: meta + play button */}
         <div className="flex items-center justify-between">
-          <div className="flex gap-2 text-xs text-white/40">
+          <div className="flex gap-3 text-xs" style={{ color: 'rgba(212,168,67,0.5)', fontFamily: 'Cinzel, serif' }}>
             <span>👥 {game.players}</span>
             {game.hasBot && <span>🤖 Bot</span>}
           </div>
           <button
             onClick={e => { e.stopPropagation(); onPlay() }}
-            className="game-btn-primary text-xs py-1.5 px-4"
+            className="btn-gold text-xs py-1.5 px-4"
           >
             Play
           </button>
         </div>
       </div>
+
+      {/* Bottom accent on hover */}
+      <div className="h-px w-full transition-opacity duration-300 opacity-0 group-hover:opacity-100"
+           style={{ background: 'linear-gradient(90deg,transparent,rgba(212,168,67,0.4),transparent)' }} />
     </div>
   )
 }
