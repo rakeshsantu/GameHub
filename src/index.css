@@ -161,20 +161,79 @@
   backdrop-filter: blur(6px);
 }
 
-/* ── Board checkerboard ────────────────────────────────────── */
-.chess-light { background: #f0d9b5; }
-.chess-dark  { background: #b58863; }
-.chess-light-sel { background: #cdd26a !important; }
-.chess-dark-sel  { background: #aaa23a !important; }
-.chess-light-move::after, .chess-dark-move::after {
-  content: '';
-  position: absolute; inset: 0;
-  background: radial-gradient(circle, rgba(20,85,0,0.35) 25%, transparent 70%);
-  border-radius: 50%;
+/* ── Chess Board ───────────────────────────────────────────── */
+.chess-light { background: #ffffff; }
+.chess-dark  { background: #1a1a1a; }
+.chess-light-sel { background: #ffe066 !important; }
+.chess-dark-sel  { background: #b8a000 !important; }
+
+/* Move dot on empty square */
+.chess-move-dot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   pointer-events: none;
 }
-.chess-light-cap { box-shadow: inset 0 0 0 4px rgba(20,85,0,0.5); }
-.chess-dark-cap  { box-shadow: inset 0 0 0 4px rgba(20,85,0,0.5); }
+.chess-move-dot::after {
+  content: '';
+  width: 30%;
+  height: 30%;
+  border-radius: 50%;
+  background: rgba(90,200,90,0.65);
+}
+
+/* Capture ring on occupied square */
+.chess-cap-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 4px rgba(90,200,90,0.7);
+  pointer-events: none;
+}
+
+/* White piece — pure white fill, thin black outline */
+.chess-piece-w {
+  color: #ffffff;
+  -webkit-text-stroke: 1.5px #000000;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  filter: drop-shadow(0 2px 2px rgba(0,0,0,0.5));
+  line-height: 1;
+  user-select: none;
+}
+
+/* Black piece — pure black fill, thin white outline */
+.chess-piece-b {
+  color: #000000;
+  -webkit-text-stroke: 1px #ffffff;
+  text-shadow: 0 1px 3px rgba(255,255,255,0.25);
+  filter: drop-shadow(0 2px 2px rgba(0,0,0,0.7));
+  line-height: 1;
+  user-select: none;
+}
+
+/* Board outer border / frame */
+.chess-frame {
+  background: #111111;
+  border: 3px solid #111111;
+  box-shadow: 0 0 0 2px #555555, 0 8px 40px rgba(0,0,0,0.85);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* Coordinate labels */
+.chess-coord {
+  font-family: 'Cinzel', serif;
+  font-size: 0.6em;
+  color: #888888;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chess-coord-light { color: #1a1a1a; }
+.chess-coord-dark  { color: #ffffff; }
 
 /* ── Sudoku focus ─────────────────────────────────────────── */
 .sudoku-selected { background: rgba(212,168,67,0.25) !important; }

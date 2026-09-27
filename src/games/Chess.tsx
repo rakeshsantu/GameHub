@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback, ReactElement } from 'react'
 import { GameConfig } from '../types'
 import { GameResult } from '../App'
 import { useSound } from '../hooks/useSound'
@@ -24,9 +24,97 @@ interface State {
   history:   string[]
 }
 
+/* ── Unicode glyphs (used for move history only) ────────── */
 const GLYPHS: Record<string,string> = {
   wK:'♔',wQ:'♕',wR:'♖',wB:'♗',wN:'♘',wP:'♙',
   bK:'♚',bQ:'♛',bR:'♜',bB:'♝',bN:'♞',bP:'♟',
+}
+
+/* ── SVG piece paths ────────────────────────────────────── */
+// Each piece rendered as inline SVG for crisp scaling at any board size
+function PieceSVG({ type, color, size }: { type: PieceType; color: Color; size: number }) {
+  const isWhite = color === 'w'
+  const fill    = isWhite ? '#ffffff' : '#111111'
+  const stroke  = isWhite ? '#111111' : '#dddddd'
+  const sw      = size * 0.045  // stroke-width proportional to cell size
+
+  // Viewbox is 45×45 (standard chess piece proportions)
+  const paths: Record<PieceType, ReactElement> = {
+    P: (
+      <g>
+        <ellipse cx="22.5" cy="37" rx="8" ry="3.5" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <circle  cx="22.5" cy="20" r="6" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <path    d="M17 28 Q14 37 30.5 37 Q31 28 28 28 Q24 35 21 28 Z" fill={fill} stroke={stroke} strokeWidth={sw} strokeLinejoin="round"/>
+        <path    d="M22.5 26 Q17 28 28 28 Z" fill={fill} stroke={stroke} strokeWidth={sw}/>
+      </g>
+    ),
+    R: (
+      <g>
+        <rect x="9" y="36" width="27" height="4" rx="1" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <rect x="11" y="16" width="23" height="20" rx="1" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <rect x="8" y="11"  width="7"  height="7" rx="1" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <rect x="19" y="11" width="7"  height="7" rx="1" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <rect x="30" y="11" width="7"  height="7" rx="1" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <rect x="8" y="16"  width="29" height="2" rx="0" fill={fill} stroke={stroke} strokeWidth={sw}/>
+      </g>
+    ),
+    N: (
+      <g>
+        <ellipse cx="22.5" cy="37" rx="8.5" ry="3" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <path d="M22 10 C12 10 10 20 11 24 C12 28 14 30 14 34 L31 34 C31 30 30 26 30 24 C32 20 32 10 22 10Z"
+              fill={fill} stroke={stroke} strokeWidth={sw} strokeLinejoin="round"/>
+        <path d="M11 24 C8 24 8 30 12 30" fill="none" stroke={stroke} strokeWidth={sw}/>
+        <circle cx="18" cy="17" r="2" fill={stroke}/>
+        <path d="M22 10 Q18 8 16 12" fill="none" stroke={stroke} strokeWidth={sw*0.8}/>
+      </g>
+    ),
+    B: (
+      <g>
+        <ellipse cx="22.5" cy="37" rx="8.5" ry="3" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <path d="M22.5 8 C17 8 13 14 13 20 C13 27 17 31 17 35 L28 35 C28 31 32 27 32 20 C32 14 28 8 22.5 8Z"
+              fill={fill} stroke={stroke} strokeWidth={sw} strokeLinejoin="round"/>
+        <circle cx="22.5" cy="8" r="2.5" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <path d="M15 26 L30 26" stroke={stroke} strokeWidth={sw} fill="none"/>
+      </g>
+    ),
+    Q: (
+      <g>
+        <ellipse cx="22.5" cy="37" rx="9" ry="3" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <path d="M9 34 L12 25 L17 30 L22.5 9 L28 30 L33 25 L36 34 Z"
+              fill={fill} stroke={stroke} strokeWidth={sw} strokeLinejoin="round" strokeLinecap="round"/>
+        <ellipse cx="22.5" cy="34" rx="10" ry="2.5" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <circle cx="9"    cy="11" r="2.5" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <circle cx="22.5" cy="8"  r="2.5" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <circle cx="36"   cy="11" r="2.5" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <circle cx="14"   cy="9"  r="2"   fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <circle cx="31"   cy="9"  r="2"   fill={fill} stroke={stroke} strokeWidth={sw}/>
+      </g>
+    ),
+    K: (
+      <g>
+        <ellipse cx="22.5" cy="37" rx="9" ry="3" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <rect x="13" y="29" width="19" height="7" rx="1" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <path d="M11 29 C11 22 17 18 22.5 16 C28 18 34 22 34 29 Z"
+              fill={fill} stroke={stroke} strokeWidth={sw} strokeLinejoin="round"/>
+        <rect x="20.5" y="7"  width="4" height="13" rx="1" fill={fill} stroke={stroke} strokeWidth={sw}/>
+        <rect x="16"   y="11" width="13" height="4"  rx="1" fill={fill} stroke={stroke} strokeWidth={sw}/>
+      </g>
+    ),
+  }
+
+  return (
+    <svg
+      viewBox="0 0 45 45"
+      width={size * 0.78}
+      height={size * 0.78}
+      xmlns="http://www.w3.org/2000/svg"
+      style={{ display:'block', overflow:'visible', filter: isWhite
+        ? 'drop-shadow(0 1px 3px rgba(0,0,0,0.8))'
+        : 'drop-shadow(0 1px 3px rgba(0,0,0,0.9))' }}
+    >
+      {paths[type]}
+    </svg>
+  )
 }
 
 /* ── Board init ────────────────────────────────────────── */
@@ -165,136 +253,286 @@ function applyMove(state:State,from:Pos,to:Pos):State {
 interface Props { config:GameConfig; onGameOver:(r:GameResult)=>void; onExit:()=>void }
 
 export default function Chess({ config, onGameOver, onExit }: Props) {
-  const {play}=useSound()
-  const depth=config.difficulty==='easy'?1:config.difficulty==='medium'?2:3
-  const isBot=config.mode==='vs-bot'
-  const p1=config.players[0], p2=config.players[1]||'Bot'
-  const [state,setState]=useState<State>({
-    board:initBoard(),turn:'w',selected:null,moves:[],
-    castle:{wK:true,wQ:true,bK:true,bQ:true},enPassant:null,
-    status:'playing',captured:{w:[],b:[]},history:[],
+  const { play } = useSound()
+  const depth   = config.difficulty==='easy' ? 1 : config.difficulty==='medium' ? 2 : 3
+  const isBot   = config.mode === 'vs-bot'
+  const p1      = config.players[0]
+  const p2      = config.players[1] || 'Bot'
+
+  const [state, setState] = useState<State>({
+    board: initBoard(), turn:'w', selected:null, moves:[],
+    castle:{wK:true,wQ:true,bK:true,bQ:true}, enPassant:null,
+    status:'playing', captured:{w:[],b:[]}, history:[],
   })
-  const [gameOver,setGameOver]=useState(false)
-  const [showHelp,setShowHelp]=useState(false)
+  const [gameOver, setGameOver]   = useState(false)
+  const [showHelp, setShowHelp]   = useState(false)
 
-  useEffect(()=>{
-    if(!isBot||state.turn!=='b'||gameOver)return
-    const t=setTimeout(()=>{
-      const mv=botMove(state.board,depth,state.enPassant,state.castle)
-      if(!mv)return; play('move'); setState(applyMove(state,mv[0],mv[1]))
-    },420)
-    return()=>clearTimeout(t)
-  },[state.turn,isBot,gameOver])
+  /* ── Dynamic cell size ─────────────────────────────────── */
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [cellSize, setCellSize]   = useState(56)
 
-  useEffect(()=>{
-    if(gameOver)return
-    if(state.status==='checkmate'){
-      const winner=state.turn==='w'?p2:p1; setGameOver(true); play('win')
-      setTimeout(()=>onGameOver({winner,gameId:'chess',difficulty:config.difficulty}),800)
-    } else if(state.status==='stalemate'){
+  const updateSize = useCallback(() => {
+    // available height: screen minus toolbar + status bar + captured rows + history ≈ 220px
+    const availH = window.innerHeight - 220
+    const availW = window.innerWidth  - 48   // 24px padding each side
+    // board needs 8 cells + 20px label column
+    const maxFromH = Math.floor((availH) / 8)
+    const maxFromW = Math.floor((availW - 20) / 8)
+    const cell = Math.max(36, Math.min(72, maxFromH, maxFromW))
+    setCellSize(cell)
+  }, [])
+
+  useEffect(() => {
+    updateSize()
+    window.addEventListener('resize', updateSize)
+    return () => window.removeEventListener('resize', updateSize)
+  }, [updateSize])
+
+  /* ── Bot move ──────────────────────────────────────────── */
+  useEffect(() => {
+    if (!isBot || state.turn !== 'b' || gameOver) return
+    const t = setTimeout(() => {
+      const mv = botMove(state.board, depth, state.enPassant, state.castle)
+      if (!mv) return
+      play('move')
+      setState(s => applyMove(s, mv[0], mv[1]))
+    }, 420)
+    return () => clearTimeout(t)
+  }, [state.turn, isBot, gameOver])
+
+  /* ── End-game ──────────────────────────────────────────── */
+  useEffect(() => {
+    if (gameOver) return
+    if (state.status === 'checkmate') {
+      const winner = state.turn === 'w' ? p2 : p1
+      setGameOver(true); play('win')
+      setTimeout(() => onGameOver({ winner, gameId:'chess', difficulty:config.difficulty }), 800)
+    } else if (state.status === 'stalemate') {
       setGameOver(true)
-      setTimeout(()=>onGameOver({winner:'Draw',gameId:'chess',difficulty:config.difficulty}),600)
+      setTimeout(() => onGameOver({ winner:'Draw', gameId:'chess', difficulty:config.difficulty }), 600)
     }
-  },[state.status])
+  }, [state.status])
 
-  const click=(r:number,c:number)=>{
-    if(gameOver||(isBot&&state.turn==='b'))return
-    const{board,selected,moves,turn}=state
-    if(selected){
-      if(moves.some(([mr,mc])=>mr===r&&mc===c)){play(board[r][c]?'capture':'move');setState(applyMove(state,selected,[r,c]))}
-      else if(board[r][c]?.color===turn){setState(s=>({...s,selected:[r,c],moves:legalMoves(board,r,c,s.enPassant,s.castle)}))}
-      else setState(s=>({...s,selected:null,moves:[]}))
-    } else if(board[r][c]?.color===turn){
-      setState(s=>({...s,selected:[r,c],moves:legalMoves(board,r,c,s.enPassant,s.castle)}))
+  /* ── Click handler ─────────────────────────────────────── */
+  const click = (r: number, c: number) => {
+    if (gameOver || (isBot && state.turn === 'b')) return
+    const { board, selected, moves, turn } = state
+    if (selected) {
+      if (moves.some(([mr,mc]) => mr===r && mc===c)) {
+        play(board[r][c] ? 'capture' : 'move')
+        setState(s => applyMove(s, selected, [r,c]))
+      } else if (board[r][c]?.color === turn) {
+        setState(s => ({...s, selected:[r,c], moves: legalMoves(board,r,c,s.enPassant,s.castle)}))
+      } else {
+        setState(s => ({...s, selected:null, moves:[]}))
+      }
+    } else if (board[r][c]?.color === turn) {
+      setState(s => ({...s, selected:[r,c], moves: legalMoves(board,r,c,s.enPassant,s.castle)}))
       play('click')
     }
   }
 
-  const COLS=['a','b','c','d','e','f','g','h']
-  const ROWS=['8','7','6','5','4','3','2','1']
+  const COLS = ['a','b','c','d','e','f','g','h']
+  const ROWS = ['8','7','6','5','4','3','2','1']
 
-  return(
-    <div className="min-h-screen flex flex-col items-center justify-center p-4 relative z-10">
-      {showHelp && <HowToPlay data={HOW_TO_PLAY.chess} onClose={()=>setShowHelp(false)} />}
+  /* coordinate label width = 20px, fixed */
+  const labelW = 20
+  const boardPx = cellSize * 8 + labelW
 
-      {/* Toolbar */}
-      <div className="flex items-center justify-between w-full max-w-[440px] mb-4">
-        <button onClick={onExit} className="btn-ghost text-xs py-1.5 px-3">← Exit</button>
-        <h2 style={{fontFamily:'Cinzel Decorative,serif',color:'#d4a843',fontSize:'1rem'}}>♟ Chess</h2>
-        <button onClick={()=>setShowHelp(true)} className="btn-ghost text-xs py-1.5 px-3">📜 How to Play</button>
+  const statusColor =
+    state.status === 'check' || state.status === 'checkmate'
+      ? '#f87171' : '#e5e7eb'
+
+  const statusBg =
+    state.status === 'check' || state.status === 'checkmate'
+      ? 'rgba(155,42,68,0.4)' : 'rgba(20,20,20,0.75)'
+
+  /* ── Captured pieces strip ─────────────────────────────── */
+  const CapturedStrip = ({ pieces, label }: { pieces: Piece[]; label: string }) => (
+    <div style={{ width: boardPx, minHeight: 22, display:'flex', alignItems:'center', gap:2, padding:'2px 0' }}>
+      <span style={{ fontSize: cellSize * 0.18, color:'#888', fontFamily:'Cinzel,serif', minWidth:40 }}>{label}</span>
+      {pieces.map((p,i) => (
+        <span key={i} style={{ fontSize: cellSize * 0.32, lineHeight:1 }}>
+          {GLYPHS[p.color + p.type]}
+        </span>
+      ))}
+    </div>
+  )
+
+  return (
+    <div
+      ref={containerRef}
+      className="min-h-screen flex flex-col items-center justify-center p-3 relative z-10"
+      style={{ gap: 6 }}
+    >
+      {showHelp && <HowToPlay data={HOW_TO_PLAY.chess} onClose={() => setShowHelp(false)} />}
+
+      {/* ── Toolbar ── */}
+      <div style={{ width: boardPx, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <button onClick={onExit} className="btn-ghost text-xs py-1 px-3">← Exit</button>
+        <h2 style={{ fontFamily:'Cinzel Decorative,serif', color:'#ffffff', fontSize:'1rem', margin:0 }}>
+          ♟ Chess
+        </h2>
+        <button onClick={() => setShowHelp(true)} className="btn-ghost text-xs py-1 px-3">📜 Rules</button>
       </div>
 
-      {/* Status banner */}
-      <div className={`text-sm mb-3 px-4 py-1.5 rounded-full font-semibold transition-all`}
-           style={{
-             fontFamily:'Cinzel,serif',letterSpacing:'0.04em',
-             background: state.status==='check'||state.status==='checkmate'?'rgba(155,42,68,0.3)':'rgba(42,21,9,0.7)',
-             border: '1px solid rgba(212,168,67,0.25)',
-             color: state.status==='check'||state.status==='checkmate'?'#fca5a5':'rgba(245,240,232,0.7)',
-           }}>
-        {state.status==='check'?'⚠ Check!':state.status==='checkmate'?'♛ Checkmate!':state.status==='stalemate'?'🤝 Stalemate':state.turn==='w'?`${p1}'s Turn (White)`:`${p2}'s Turn (Black)`}
+      {/* ── Status banner ── */}
+      <div style={{
+        width: boardPx,
+        textAlign:'center',
+        fontSize: Math.max(11, cellSize * 0.2),
+        fontFamily:'Cinzel,serif',
+        letterSpacing:'0.04em',
+        fontWeight:600,
+        background: statusBg,
+        border:'1px solid rgba(255,255,255,0.12)',
+        borderRadius: 20,
+        padding:'4px 12px',
+        color: statusColor,
+        transition:'background 0.3s',
+      }}>
+        {state.status==='check'     ? '⚠ Check!'
+        :state.status==='checkmate' ? '♛ Checkmate!'
+        :state.status==='stalemate' ? '🤝 Stalemate'
+        :state.turn==='w'           ? `${p1}'s Turn — White`
+                                    : `${p2}'s Turn — Black`}
       </div>
 
-      {/* Captured black pieces */}
-      <div className="text-base mb-1 h-6 opacity-70">
-        {state.captured.b.map((p,i)=><span key={i}>{GLYPHS['b'+p.type]}</span>)}
-      </div>
+      {/* ── Captured black pieces (taken by white, shown above board) ── */}
+      <CapturedStrip pieces={state.captured.b} label="Captured:" />
 
-      {/* Board */}
-      <div className="rounded-xl overflow-hidden shadow-2xl"
-           style={{border:'2px solid rgba(212,168,67,0.35)',boxShadow:'0 8px 40px rgba(0,0,0,0.7)'}}>
-        {state.board.map((row,r)=>(
-          <div key={r} className="flex">
-            <div className="w-5 flex items-center justify-center text-xs select-none"
-                 style={{background:'#3a1f0d',color:'rgba(212,168,67,0.5)',fontFamily:'Cinzel,serif'}}>
+      {/* ── Board ── */}
+      <div className="chess-frame" style={{ width: boardPx }}>
+        {state.board.map((row, r) => (
+          <div key={r} style={{ display:'flex', height: cellSize }}>
+
+            {/* rank label */}
+            <div
+              className="chess-coord"
+              style={{
+                width: labelW,
+                height: cellSize,
+                background: '#111',
+                fontSize: Math.max(9, cellSize * 0.19),
+                color:'#aaa',
+              }}
+            >
               {ROWS[r]}
             </div>
-            {row.map((piece,c)=>{
-              const light=(r+c)%2===0
-              const sel=state.selected?.[0]===r&&state.selected?.[1]===c
-              const mov=state.moves.some(([mr,mc])=>mr===r&&mc===c)
-              return(
-                <div key={c} onClick={()=>click(r,c)}
-                  className={`w-10 h-10 md:w-12 md:h-12 flex items-center justify-center
-                             cursor-pointer relative transition-colors select-none
-                             ${light?'chess-light':'chess-dark'}
-                             ${sel?(light?'chess-light-sel':'chess-dark-sel'):''}
-                             hover:brightness-110`}>
-                  {mov&&(
-                    piece
-                      ? <div className={light?'chess-light-cap':'chess-dark-cap'} style={{position:'absolute',inset:0}}/>
-                      : <div className={light?'chess-light-move':'chess-dark-move'} style={{position:'absolute',inset:0}}/>
+
+            {row.map((piece, c) => {
+              const isLight  = (r + c) % 2 === 0
+              const isSel    = state.selected?.[0]===r && state.selected?.[1]===c
+              const isMov    = state.moves.some(([mr,mc]) => mr===r && mc===c)
+
+              /* cell background */
+              let bg = isLight ? '#ffffff' : '#1a1a1a'
+              if (isSel) bg = '#ffe066'
+
+              return (
+                <div
+                  key={c}
+                  onClick={() => click(r, c)}
+                  style={{
+                    width: cellSize,
+                    height: cellSize,
+                    background: bg,
+                    position:'relative',
+                    display:'flex',
+                    alignItems:'center',
+                    justifyContent:'center',
+                    cursor:'pointer',
+                    transition:'background 0.1s',
+                    boxSizing:'border-box',
+                    // subtle border-right/bottom to define cells
+                    borderRight:  c < 7 ? `1px solid ${isLight ? '#ccc' : '#333'}` : 'none',
+                    borderBottom: r < 7 ? `1px solid ${isLight ? '#ccc' : '#333'}` : 'none',
+                  }}
+                >
+                  {/* move indicator */}
+                  {isMov && !piece && (
+                    <div style={{
+                      position:'absolute', inset:0,
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      pointerEvents:'none',
+                    }}>
+                      <div style={{
+                        width: cellSize * 0.3,
+                        height: cellSize * 0.3,
+                        borderRadius:'50%',
+                        background:'rgba(60,180,60,0.55)',
+                      }}/>
+                    </div>
                   )}
-                  {piece&&(
-                    <span className={`text-2xl md:text-3xl z-10 select-none leading-none
-                      ${piece.color==='w'?'drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]':'drop-shadow-[0_1px_2px_rgba(255,255,255,0.2)]'}`}>
-                      {GLYPHS[piece.color+piece.type]}
-                    </span>
+
+                  {/* capture ring */}
+                  {isMov && piece && (
+                    <div style={{
+                      position:'absolute', inset:0,
+                      borderRadius:'50%',
+                      boxShadow:`inset 0 0 0 ${Math.max(3, cellSize * 0.07)}px rgba(60,180,60,0.7)`,
+                      pointerEvents:'none',
+                    }}/>
+                  )}
+
+                  {/* king-in-check highlight */}
+                  {piece?.type==='K' && piece.color===state.turn && state.status==='check' && (
+                    <div style={{
+                      position:'absolute', inset:0,
+                      background:'rgba(220,50,50,0.35)',
+                      pointerEvents:'none',
+                    }}/>
+                  )}
+
+                  {/* piece */}
+                  {piece && (
+                    <div style={{ position:'relative', zIndex:2 }}>
+                      <PieceSVG type={piece.type} color={piece.color} size={cellSize} />
+                    </div>
                   )}
                 </div>
               )
             })}
           </div>
         ))}
-        <div className="flex ml-5" style={{background:'#3a1f0d'}}>
-          {COLS.map(col=>(
-            <div key={col} className="w-10 md:w-12 flex items-center justify-center text-xs h-4 select-none"
-                 style={{color:'rgba(212,168,67,0.5)',fontFamily:'Cinzel,serif'}}>
+
+        {/* file labels row */}
+        <div style={{ display:'flex', background:'#111', height: labelW }}>
+          <div style={{ width: labelW }} />
+          {COLS.map(col => (
+            <div
+              key={col}
+              className="chess-coord"
+              style={{
+                width: cellSize,
+                height: labelW,
+                fontSize: Math.max(9, cellSize * 0.19),
+                color:'#aaa',
+              }}
+            >
               {col}
             </div>
           ))}
         </div>
       </div>
 
-      {/* Captured white pieces */}
-      <div className="text-base mt-1 h-6 opacity-70">
-        {state.captured.w.map((p,i)=><span key={i}>{GLYPHS['w'+p.type]}</span>)}
-      </div>
+      {/* ── Captured white pieces (taken by black, shown below board) ── */}
+      <CapturedStrip pieces={state.captured.w} label="Captured:" />
 
-      {/* Move history */}
-      <div className="mt-3 w-full max-w-[440px] px-4 py-2 rounded-lg text-xs overflow-x-auto whitespace-nowrap"
-           style={{background:'rgba(26,12,6,0.7)',border:'1px solid rgba(212,168,67,0.15)',color:'rgba(212,168,67,0.4)',fontFamily:'Cinzel,serif'}}>
-        {state.history.slice(-8).join('  ')||'No moves yet'}
+      {/* ── Move history ── */}
+      <div style={{
+        width: boardPx,
+        background:'rgba(15,15,15,0.85)',
+        border:'1px solid rgba(255,255,255,0.1)',
+        borderRadius: 8,
+        padding:'4px 10px',
+        fontFamily:'Cinzel,serif',
+        fontSize: Math.max(10, cellSize * 0.16),
+        color:'rgba(200,200,200,0.55)',
+        overflowX:'auto',
+        whiteSpace:'nowrap',
+      }}>
+        {state.history.slice(-10).join('  ') || 'No moves yet'}
       </div>
     </div>
   )
