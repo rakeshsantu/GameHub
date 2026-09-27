@@ -1,0 +1,10 @@
+# Allow only PHP files; block direct access to config
+<Files "config.php">
+    Order Allow,Deny
+    Deny from all
+</Files>
+
+# CORS preflight
+Header always set Access-Control-Allow-Origin "*"
+Header always set Access-Control-Allow-Methods "GET, POST, OPTIONS"
+Header always set Access-Control-Allow-Headers "Content-Type, Authorization"
