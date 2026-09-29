@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-const API = import.meta.env.VITE_API_BASE ?? '/api'
+const API = import.meta.env?.VITE_API_URL ?? '/api'
 
 /**
  * Increments the page-view counter once on mount (POST),

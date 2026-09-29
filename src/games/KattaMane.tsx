@@ -1,11 +1,12 @@
 /**
- * Katta Mane / Ashta Chamma — Authentic South Indian board game
+ * Katta Mane / Ashta Chamma / Pallanguzhi — Authentic South Indian board game
  *
  * Board: 5×5 grid with X-diagonal marks on ALL cells (matching real jute board).
  *        Pieces travel around the outer ring → inner cross arms → centre Home.
  * Dice:  4 cowrie shells (white shells, each face-up = 1 pt; 0 = 4; all 4 = 8).
  * Tokens: 4 dome-shaped capsule pieces per player (Red, Yellow, Green, Orange).
  * Entry: Roll 1 or 4 to enter a piece. 8 = bonus move.
+ * Layout: Side-by-side with responsive board for mobile support.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
@@ -18,14 +19,12 @@ import { HOW_TO_PLAY } from './howToPlayData'
 interface Props { config: GameConfig; onGameOver: (r: GameResult) => void; onExit: () => void }
 
 /* ─────────────────────────────────────────────────────────────
-   BOARD GEOMETRY
-   5×5 grid, cell = BOARD_SIZE / 5
-   Track positions: 1–20 outer ring + 4 inner arm + 25 HOME
+   BOARD GEOMETRY - RESPONSIVE
+   Base size scales down on mobile
    ───────────────────────────────────────────────────────────── */
-const BOARD_SIZE = 460
-const CELLS      = 5
-const CELL       = BOARD_SIZE / CELLS   // 92px
-const NUM_PIECES = 4
+const BASE_BOARD_SIZE = 460
+const CELLS           = 5
+const NUM_PIECES      = 4
 
 /** Outer ring (clockwise, 20 squares, 0-indexed row/col) */
 const OUTER_RING: [number, number][] = [
@@ -137,6 +136,11 @@ function initGS(np: number): GS {
 export default function KattaMane({ config, onGameOver, onExit }: Props) {
   const { play }       = useSound()
   const canvasRef      = useRef<HTMLCanvasElement>(null)
+  const containerRef   = useRef<HTMLDivElement>(null)
+  
+  /* Dynamic board size based on container width */
+  const [boardSize, setBoardSize] = useState(BASE_BOARD_SIZE)
+  
   const np             = config.mode === 'multiplayer' && config.players.length >= 3
     ? Math.min(config.players.length, 4)
     : 2
@@ -151,15 +155,33 @@ export default function KattaMane({ config, onGameOver, onExit }: Props) {
   const names  = Array.from({ length: np }, (_, i) =>
     config.players[i] || (i === 1 && isBot ? 'Bot' : `Player ${i + 1}`)
   )
+  
+  /* Responsive board sizing */
+  useEffect(() => {
+    const handleResize = () => {
+      if (!containerRef.current) return
+      const containerWidth = containerRef.current.offsetWidth
+      // Calculate board size: max 460px, min 320px, leave space for side panel on desktop
+      const isMobile = window.innerWidth < 768
+      const maxSize = isMobile ? Math.min(containerWidth - 32, BASE_BOARD_SIZE) : BASE_BOARD_SIZE
+      const newSize = Math.max(320, Math.min(maxSize, containerWidth - (isMobile ? 32 : 180)))
+      setBoardSize(newSize)
+    }
+    
+    handleResize()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
 
   /* ───────────────────────────────────────────────────────────
-     CANVAS DRAW
+     CANVAS DRAW - with dynamic sizing
      ─────────────────────────────────────────────────────────── */
   const draw = useCallback((state: GS) => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')!
-    const W = BOARD_SIZE, H = BOARD_SIZE
+    const W = boardSize, H = boardSize
+    const CELL = W / CELLS
 
     ctx.clearRect(0, 0, W, H)
 
@@ -368,7 +390,7 @@ export default function KattaMane({ config, onGameOver, onExit }: Props) {
 
     /* eslint-disable @typescript-eslint/no-unused-vars */
     void cellXY
-  }, [np, isBot, done]) // eslint-disable-line
+  }, [np, isBot, done, boardSize]) // eslint-disable-line
 
   /** Draw a dome/capsule-shaped token like the real game pieces */
   function drawCapsule(
@@ -576,17 +598,18 @@ export default function KattaMane({ config, onGameOver, onExit }: Props) {
     }
   }, [gs, isBot, done, doRoll, movePiece])
 
-  /* Canvas click handler */
+  /* Canvas click handler - with dynamic sizing */
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (gs.phase !== 'move' || done || (isBot && gs.turn === 1)) return
     const rect  = canvasRef.current!.getBoundingClientRect()
-    const scale = BOARD_SIZE / rect.width
+    const scale = boardSize / rect.width
     const mx    = (e.clientX - rect.left) * scale
     const my    = (e.clientY - rect.top)  * scale
 
+    const CELL  = boardSize / CELLS
     const pad   = 12
-    const innerH = BOARD_SIZE - pad * 2 - 16
-    const cellW  = (BOARD_SIZE - pad * 2) / CELLS
+    const innerH = boardSize - pad * 2 - 16
+    const cellW  = (boardSize - pad * 2) / CELLS
     const cellH  = innerH / CELLS
     const col   = Math.floor((mx - pad) / cellW)
     const row   = Math.floor((my - pad) / cellH)
@@ -615,20 +638,21 @@ export default function KattaMane({ config, onGameOver, onExit }: Props) {
   }
 
   /* ─────────────────────────────────────────────────────────
-     RENDER
+     RENDER - Side-by-side responsive layout
      ───────────────────────────────────────────────────────── */
   const t       = gs.turn
   const homePcs = (pi: number) => gs.pos[pi].filter(p => p >= 25).length
 
   return (
     <div
-      className="min-h-screen flex flex-col items-center justify-center p-2 relative z-10 select-none"
+      ref={containerRef}
+      className="min-h-screen flex flex-col items-center justify-center p-2 md:p-4 relative z-10 select-none"
       style={{ fontFamily: 'Crimson Text, Georgia, serif' }}
     >
       {showHelp && <HowToPlay data={HOW_TO_PLAY.kattamane} onClose={() => setShowHelp(false)} />}
 
       {/* ── Toolbar ── */}
-      <div className="flex items-center justify-between w-full max-w-[520px] mb-2">
+      <div className="flex items-center justify-between w-full max-w-[720px] mb-2">
         <button onClick={onExit} className="btn-ghost text-xs py-1.5 px-3">← Exit</button>
         <h2 style={{ fontFamily: 'Cinzel Decorative,serif', color: '#d4a843', fontSize: '1rem' }}>
           🐚 Ashta Chamma
@@ -638,30 +662,34 @@ export default function KattaMane({ config, onGameOver, onExit }: Props) {
 
       {/* ── Status ── */}
       <div
-        className="text-sm mb-2 px-5 py-1.5 rounded-full text-center max-w-[460px]"
+        className="text-sm mb-3 px-5 py-1.5 rounded-full text-center max-w-[520px]"
         style={{
           fontFamily: 'Cinzel,serif',
           letterSpacing: '0.03em',
           background: 'rgba(42,21,9,0.9)',
-          border: `1px solid ${TOKEN_FILL[t]}55`,
+          border: `2px solid ${TOKEN_FILL[t]}55`,
           color: TOKEN_LIGHT[t],
           transition: 'border-color 0.3s, color 0.3s',
+          boxShadow: `0 0 12px ${TOKEN_FILL[t]}33`,
         }}
       >
         {msg}
       </div>
 
-      <div className="flex gap-3 items-start justify-center w-full max-w-[600px] flex-wrap">
+      {/* ── SIDE-BY-SIDE LAYOUT ── */}
+      <div className="flex flex-col md:flex-row gap-4 items-start justify-center w-full max-w-[720px]">
 
-        {/* ── BOARD ── */}
-        <div className="flex flex-col items-center gap-2">
+        {/* ── LEFT: BOARD ── */}
+        <div className="flex flex-col items-center gap-2 flex-shrink-0">
           <canvas
             ref={canvasRef}
-            width={BOARD_SIZE}
-            height={BOARD_SIZE}
+            width={boardSize}
+            height={boardSize}
             className="rounded-md cursor-pointer"
             style={{
-              maxWidth: 'min(460px, 90vw)',
+              width: '100%',
+              maxWidth: `${boardSize}px`,
+              height: 'auto',
               boxShadow: [
                 '0 0 0 3px #6b4c12',
                 '0 0 0 6px rgba(212,168,67,0.35)',
@@ -670,13 +698,13 @@ export default function KattaMane({ config, onGameOver, onExit }: Props) {
             }}
             onClick={handleCanvasClick}
           />
-          <p className="text-xs text-center" style={{ color: 'rgba(212,168,67,0.4)', fontFamily: 'Cinzel,serif', letterSpacing: '0.05em' }}>
-            Tap a piece on the board (or use buttons below)
+          <p className="text-xs text-center px-2" style={{ color: 'rgba(212,168,67,0.4)', fontFamily: 'Cinzel,serif', letterSpacing: '0.05em' }}>
+            Tap a piece on the board
           </p>
         </div>
 
-        {/* ── RIGHT PANEL ── */}
-        <div className="flex flex-col gap-2.5 min-w-[130px] max-w-[150px]">
+        {/* ── RIGHT: CONTROLS PANEL ── */}
+        <div className="flex flex-col gap-3 w-full md:w-auto md:min-w-[160px] md:max-w-[180px]">
 
           {/* Cowrie dice */}
           <div
@@ -686,7 +714,7 @@ export default function KattaMane({ config, onGameOver, onExit }: Props) {
             <div className="text-xs mb-2 tracking-widest uppercase" style={{ color: 'rgba(212,168,67,0.5)', fontFamily: 'Cinzel,serif' }}>
               Cowries
             </div>
-            <div className="flex gap-1.5 justify-center flex-wrap mb-2">
+            <div className="flex gap-2 justify-center flex-wrap mb-2">
               {(gs.cowries.length ? gs.cowries : Array(4).fill(false)).map((up, i) => (
                 <CowrieShell key={i} faceUp={up} rolling={rolling} />
               ))}
@@ -699,96 +727,12 @@ export default function KattaMane({ config, onGameOver, onExit }: Props) {
             )}
           </div>
 
-          {/* Players */}
-          {names.map((name, pi) => (
-            <div
-              key={pi}
-              className="rounded-xl p-2.5"
-              style={{
-                background: 'rgba(26,12,6,0.90)',
-                border: `1px solid ${t === pi && !done ? TOKEN_FILL[pi] + '88' : 'rgba(212,168,67,0.12)'}`,
-                transition: 'border-color 0.3s',
-              }}
-            >
-              {/* Header */}
-              <div className="flex items-center gap-1.5 mb-1.5">
-                <div
-                  className="w-3.5 h-3.5 rounded-full flex-shrink-0"
-                  style={{ background: TOKEN_FILL[pi], border: `2px solid ${TOKEN_EDGE[pi]}` }}
-                />
-                <span className="text-xs font-semibold truncate" style={{ color: TOKEN_LIGHT[pi], fontFamily: 'Cinzel,serif', fontSize: '10px' }}>
-                  {name}
-                </span>
-                {homePcs(pi) === NUM_PIECES && <span>🏆</span>}
-              </div>
-
-              {/* Progress dots */}
-              <div className="flex gap-0.5 mb-1.5">
-                {Array.from({ length: NUM_PIECES }, (_, i) => (
-                  <div
-                    key={i}
-                    className="flex-1 h-1.5 rounded-full"
-                    style={{
-                      background: i < homePcs(pi) ? TOKEN_FILL[pi] : 'rgba(212,168,67,0.12)',
-                      border: '1px solid rgba(212,168,67,0.15)',
-                    }}
-                  />
-                ))}
-              </div>
-
-              {/* Piece buttons */}
-              <div className="grid grid-cols-2 gap-1">
-                {gs.pos[pi].map((pos, i) => {
-                  const isHome  = pos >= 25
-                  const inYard  = pos === 0 || !gs.entered[pi][i]
-                  const movable = t === pi && gs.phase === 'move' && canMoveG(gs, pi, i) && !done && !(isBot && pi === 1)
-                  return (
-                    <button
-                      key={i}
-                      onClick={() => movable && movePiece(i)}
-                      className="py-1 rounded-md text-center transition-all"
-                      style={{
-                        background: isHome
-                          ? 'rgba(212,168,67,0.22)'
-                          : movable
-                          ? `${TOKEN_FILL[pi]}33`
-                          : 'rgba(42,21,9,0.6)',
-                        border: `1px solid ${movable ? '#fbbf24' : isHome ? 'rgba(212,168,67,0.35)' : 'rgba(212,168,67,0.1)'}`,
-                        boxShadow: movable ? `0 0 8px ${TOKEN_FILL[pi]}66` : 'none',
-                        cursor: movable ? 'pointer' : 'default',
-                        transform: movable ? 'scale(1.06)' : 'scale(1)',
-                      }}
-                    >
-                      {/* Mini capsule icon */}
-                      <div className="flex justify-center mb-0.5">
-                        <div
-                          style={{
-                            width: 10, height: 14,
-                            borderRadius: '50%',
-                            background: isHome
-                              ? `linear-gradient(180deg, #fde68a, ${TOKEN_FILL[pi]})`
-                              : `linear-gradient(180deg, ${TOKEN_LIGHT[pi]}, ${TOKEN_FILL[pi]})`,
-                            border: `1px solid ${TOKEN_EDGE[pi]}`,
-                            opacity: inYard ? 0.5 : 1,
-                          }}
-                        />
-                      </div>
-                      <div style={{ fontSize: '9px', color: isHome ? '#fbbf24' : TOKEN_LIGHT[pi], lineHeight: 1 }}>
-                        {isHome ? '🏠' : inYard ? 'Yard' : `#${pos}`}
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-
           {/* Roll button */}
           {gs.phase === 'roll' && !done && (gs.turn === 0 || !isBot) && (
             <button
               onClick={doRoll}
               disabled={rolling}
-              className="btn-gold py-3 text-sm"
+              className="btn-gold py-3 text-sm font-semibold"
               style={{ opacity: rolling ? 0.7 : 1 }}
             >
               {rolling ? (
@@ -798,11 +742,109 @@ export default function KattaMane({ config, onGameOver, onExit }: Props) {
               ) : '🐚 Roll Cowries'}
             </button>
           )}
+          
           {isBot && gs.turn === 1 && !done && (
-            <div className="text-xs text-center py-2" style={{ color: 'rgba(212,168,67,0.4)', fontFamily: 'Cinzel,serif' }}>
-              🤖 Bot thinking…
+            <div className="text-xs text-center py-3 px-3 rounded-lg"
+                 style={{ 
+                   background: 'rgba(26,12,6,0.90)', 
+                   border: '1px solid rgba(212,168,67,0.2)', 
+                   color: 'rgba(212,168,67,0.6)', 
+                   fontFamily: 'Cinzel,serif' 
+                 }}>
+              🤖 Bot is thinking…
             </div>
           )}
+
+          {/* Players */}
+          {names.map((name, pi) => (
+            <div
+              key={pi}
+              className="rounded-xl p-3"
+              style={{
+                background: 'rgba(26,12,6,0.90)',
+                border: `2px solid ${t === pi && !done ? TOKEN_FILL[pi] + '88' : 'rgba(212,168,67,0.12)'}`,
+                transition: 'all 0.3s',
+                boxShadow: t === pi && !done ? `0 0 16px ${TOKEN_FILL[pi]}44` : 'none',
+              }}
+            >
+              {/* Header */}
+              <div className="flex items-center gap-2 mb-2">
+                <div
+                  className="w-4 h-4 rounded-full flex-shrink-0"
+                  style={{ background: TOKEN_FILL[pi], border: `2px solid ${TOKEN_EDGE[pi]}`, boxShadow: `0 2px 4px ${TOKEN_EDGE[pi]}` }}
+                />
+                <span className="text-xs font-semibold truncate" style={{ color: TOKEN_LIGHT[pi], fontFamily: 'Cinzel,serif' }}>
+                  {name}
+                </span>
+                {homePcs(pi) === NUM_PIECES && <span className="text-sm">🏆</span>}
+              </div>
+
+              {/* Progress bar */}
+              <div className="flex gap-1 mb-2">
+                {Array.from({ length: NUM_PIECES }, (_, i) => (
+                  <div
+                    key={i}
+                    className="flex-1 h-2 rounded-full transition-all"
+                    style={{
+                      background: i < homePcs(pi) ? TOKEN_FILL[pi] : 'rgba(212,168,67,0.12)',
+                      border: '1px solid rgba(212,168,67,0.2)',
+                      boxShadow: i < homePcs(pi) ? `0 1px 3px ${TOKEN_EDGE[pi]}` : 'none',
+                    }}
+                  />
+                ))}
+              </div>
+              
+              <div className="text-[10px] text-center mb-2" style={{ color: 'rgba(212,168,67,0.45)', fontFamily: 'Cinzel,serif' }}>
+                {homePcs(pi)}/{NUM_PIECES} pieces home
+              </div>
+
+              {/* Piece buttons */}
+              <div className="grid grid-cols-2 gap-1.5">
+                {gs.pos[pi].map((pos, i) => {
+                  const isHome  = pos >= 25
+                  const inYard  = pos === 0 || !gs.entered[pi][i]
+                  const movable = t === pi && gs.phase === 'move' && canMoveG(gs, pi, i) && !done && !(isBot && pi === 1)
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => movable && movePiece(i)}
+                      className="py-2 rounded-lg text-center transition-all"
+                      style={{
+                        background: isHome
+                          ? 'rgba(212,168,67,0.25)'
+                          : movable
+                          ? `${TOKEN_FILL[pi]}44`
+                          : 'rgba(42,21,9,0.65)',
+                        border: `1px solid ${movable ? '#fbbf24' : isHome ? 'rgba(212,168,67,0.4)' : 'rgba(212,168,67,0.12)'}`,
+                        boxShadow: movable ? `0 0 10px ${TOKEN_FILL[pi]}77` : 'none',
+                        cursor: movable ? 'pointer' : 'default',
+                        transform: movable ? 'scale(1.05)' : 'scale(1)',
+                      }}
+                    >
+                      {/* Mini capsule icon */}
+                      <div className="flex justify-center mb-1">
+                        <div
+                          style={{
+                            width: 12, height: 16,
+                            borderRadius: '50%',
+                            background: isHome
+                              ? `linear-gradient(180deg, #fde68a, ${TOKEN_FILL[pi]})`
+                              : `linear-gradient(180deg, ${TOKEN_LIGHT[pi]}, ${TOKEN_FILL[pi]})`,
+                            border: `1.5px solid ${TOKEN_EDGE[pi]}`,
+                            opacity: inYard ? 0.5 : 1,
+                            boxShadow: isHome ? '0 2px 4px rgba(0,0,0,0.3)' : 'none',
+                          }}
+                        />
+                      </div>
+                      <div style={{ fontSize: '10px', color: isHome ? '#fbbf24' : TOKEN_LIGHT[pi], lineHeight: 1.2, fontFamily: 'Cinzel,serif' }}>
+                        {isHome ? '🏠 Home' : inYard ? 'Yard' : `Sq ${pos}`}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>

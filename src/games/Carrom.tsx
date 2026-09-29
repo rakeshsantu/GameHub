@@ -226,17 +226,23 @@ export default function Carrom({ config, onGameOver, onExit }: Props) {
     ctx.beginPath(); ctx.arc(CENTER, CENTER, 5, 0, Math.PI * 2)
     ctx.fillStyle = 'rgba(100,60,20,0.4)'; ctx.fill()
 
-    /* ── Baseline (striker lane) ── */
+    /* ── Baseline (striker lane) — DARK solid line ── */
     const laneY = baseY
     ctx.save()
-    ctx.strokeStyle = 'rgba(212,168,67,0.45)'
-    ctx.lineWidth   = 1.5
-    ctx.setLineDash([6, 4])
+    /* Main dark line */
+    ctx.strokeStyle = 'rgba(80,50,20,0.85)'
+    ctx.lineWidth   = 2.5
     ctx.beginPath()
     ctx.moveTo(BORDER + LANE_PAD, laneY)
     ctx.lineTo(SIZE - BORDER - LANE_PAD, laneY)
     ctx.stroke()
-    ctx.setLineDash([])
+    /* Subtle inner highlight for depth */
+    ctx.strokeStyle = 'rgba(120,70,30,0.4)'
+    ctx.lineWidth   = 1
+    ctx.beginPath()
+    ctx.moveTo(BORDER + LANE_PAD, laneY - 1)
+    ctx.lineTo(SIZE - BORDER - LANE_PAD, laneY - 1)
+    ctx.stroke()
     ctx.restore()
 
     /* Baseline label */

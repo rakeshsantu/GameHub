@@ -1,11 +1,12 @@
-/**
- * Chowka Bara — Authentic 5×5 board rewrite
+﻿/**
+ * Chowka Bara â€” Complete Rewrite with 5-à²®à²¨à³† & 7-à²®à²¨à³† variants
  *
- * Board: 5×5 grid, each cell has X diagonal lines (matching real board).
- * Track: pieces travel along the outer ring (20 squares) → inner cross path → centre home.
- * Dice: 2 rectangular wooden stick dice drawn on canvas (0 or 1 face each).
- * Tokens: flat coloured disc tokens on board cells (red, green, yellow, black per player).
- * Entry: roll 1 or 4 to enter. 8 = all-4-up bonus.
+ * Features:
+ * - Two board types: 5-house (4 pieces/player) & 7-house (6 pieces/player)
+ * - Three game modes: Outer Entry, Center Start, Normal (with capture rules)
+ * - Ghatta (safe cross squares) â€” pieces can't be captured here
+ * - Visual piece highlighting after dice roll + reminder notifications
+ * - Authentic 5Ã—5 grid with X-marked cells matching traditional boards
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
@@ -17,705 +18,795 @@ import { HOW_TO_PLAY } from './howToPlayData'
 
 interface Props { config: GameConfig; onGameOver: (r: GameResult) => void; onExit: () => void }
 
-/* ── Constants ───────────────────────────────────────────── */
-const BOARD_SIZE  = 440          // canvas px
+/* â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+const BOARD_SIZE  = 480
 const CELLS       = 5
 const CELL        = BOARD_SIZE / CELLS
-const NUM_PIECES  = 4
 
-/* Board track: 24 positions.
-   Positions 1-20 = outer ring (clockwise from bottom-left).
-   Positions 21-24 = arm toward centre (safe path per player).
-   Position 25 = HOME (centre).
-   We map these to [row, col] on the 5×5 grid. */
+/* Board variants */
+type BoardType = '5mane' | '7mane'
+type GameMode  = 'outer' | 'center' | 'normal'
 
-// Outer ring clockwise (0-indexed cells), starting bottom-left going up
-const OUTER_RING: [number,number][] = [
-  // Left column going UP (row 4→0, col 0)
-  [4,0],[3,0],[2,0],[1,0],[0,0],
-  // Top row going RIGHT (row 0, col 1→4)
-  [0,1],[0,2],[0,3],[0,4],
-  // Right column going DOWN (row 1→4, col 4)
-  [1,4],[2,4],[3,4],[4,4],
-  // Bottom row going LEFT (row 4, col 3→0)
-  [4,3],[4,2],[4,1],
-]
-// That's 16 outer perimeter cells.
-// Cross/inner squares: the 4 arm cells leading to centre + centre itself
-const ARM_CELLS: [number,number][] = [
-  [2,1],[2,2],[2,3],  // middle row inner
-  [1,2],[3,2],        // middle col inner
-  [2,2],              // centre (HOME)
-]
+/* 5-à²®à²¨à³† = 4 pieces, 7-à²®à²¨à³† = 6 pieces */
+const PIECES_COUNT: Record<BoardType, number> = { '5mane': 4, '7mane': 6 }
 
-// Full movement track per player (24 steps → HOME at step 24)
-// Each player starts from a different corner of the outer ring
-// Player 0 (Red)   — starts bottom-left,  travels outer ring clockwise
-// Player 1 (Green) — starts top-right,    offset by 8
-// Player 2 (Yellow)— starts top-left,     offset by 4 (4-player only)
-// Player 3 (Black) — starts bottom-right, offset by 12
+/* Safe squares (Ghatta) â€” cross-marked squares where capture is not allowed */
+const GHATTA_CELLS = new Set<string>([
+  '0,0', '0,2', '0,4',      // top row corners + center
+  '2,0', '2,2', '2,4',      // middle row edges + center
+  '4,0', '4,2', '4,4',      // bottom row corners + center
+  '1,1', '1,3', '3,1', '3,3', // inner cross squares
+])
 
-const TRACK_OUTER: [number,number][] = [
-  // Clockwise from bottom-left (20 squares)
-  [4,0],[3,0],[2,0],[1,0],[0,0], // left col up
-  [0,1],[0,2],[0,3],[0,4],       // top row right
-  [1,4],[2,4],[3,4],[4,4],       // right col down
-  [4,3],[4,2],[4,1],             // bottom row left
-  [4,0],                         // back to start (completes ring, reuse idx0)
-  // Home column (inner cross path) — shared
-  [3,2],[2,2],[1,2],[2,2],       // approach centre & centre
+/* â”€â”€ Track/Path system â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Movement track per player (outer ring path clockwise, then inner cross to center) */
+const OUTER_RING_PATH: [number, number][] = [
+  // Start bottom-left, go counter-clockwise around perimeter
+  [4,0],[3,0],[2,0],[1,0],[0,0], // left edge going up
+  [0,1],[0,2],[0,3],[0,4],       // top edge going right
+  [1,4],[2,4],[3,4],[4,4],       // right edge going down
+  [4,3],[4,2],[4,1],             // bottom edge going left (back to start)
 ]
 
-// Simplified: we model a linear track of 24 steps for 2 players
-// Each player's track offset on the outer 16-cell ring
-const PLAYER_START_IDX = [0, 8]   // Player 0 starts at ring pos 0; Player 1 at pos 8
-
-// Build a 24-step track for each player by rotating the ring
-function buildTrack(startIdx: number): [number,number][] {
-  const ring: [number,number][] = [
-    [4,0],[3,0],[2,0],[1,0],[0,0],
-    [0,1],[0,2],[0,3],[0,4],
-    [1,4],[2,4],[3,4],[4,4],
-    [4,3],[4,2],[4,1],
-  ]
-  const rotated = [...ring.slice(startIdx), ...ring.slice(0, startIdx)]
-  // Inner path toward centre (4 steps)
-  const inner: [number,number][] = [[3,2],[2,2],[1,2],[2,2]]
-  // Actually use a short direct arm: 3 steps to centre depending on player
-  const innerArms: Record<number, [number,number][]> = {
-    0: [[3,0],[2,0],[2,1],[2,2]],   // won't be used in track
-    8: [[1,4],[2,4],[2,3],[2,2]],
-  }
-  void inner; void innerArms
-  // For simplicity: after 16 outer steps, 4 inner diagonal steps then centre
-  const innerPath: [number,number][] = [
-    [3,1],[2,1],[1,1],[2,2],   // placeholder inner path
-  ]
-  return [...rotated, ...innerPath, [2,2]]  // 16 + 4 + 1 = 21, we pad to 24
+/* Inner cross paths leading to center (per player home direction) */
+const INNER_PATHS: Record<number, [number, number][]> = {
+  0: [[3,1],[2,1],[1,1],[2,2]],  // Player 0 (Red) â€” from bottom
+  1: [[1,3],[1,2],[1,1],[2,2]],  // Player 1 (Green) â€” from top
+  2: [[1,1],[2,1],[3,1],[2,2]],  // Player 2 (Yellow) â€” from left
+  3: [[3,3],[2,3],[1,3],[2,2]],  // Player 3 (Black) â€” from right
 }
 
-// Pre-built tracks
-const TRACKS: [number,number][][] = [0,8].map(buildTrack)
+/* Build complete track for each player (outer ring + inner path) */
+function buildPlayerTrack(startRingPos: number, playerIdx: number): [number, number][] {
+  const ring = [...OUTER_RING_PATH.slice(startRingPos), ...OUTER_RING_PATH.slice(0, startRingPos)]
+  const inner = INNER_PATHS[playerIdx] || [[2,1],[2,2]]
+  return [...ring, ...inner]
+}
 
-// Get [row,col] for a given player/position
-function getCell(player: number, pos: number): [number,number] | null {
-  if (pos <= 0) return null                      // in yard
-  if (pos >= 25) return [2, 2]                   // centre = HOME
-  const track = TRACKS[Math.min(player, 1)]
-  const idx   = pos - 1
-  if (idx >= track.length) return [2, 2]
+/* Player starting positions on outer ring (offset by 4 squares each) */
+const PLAYER_RING_STARTS = [0, 4, 8, 12] // 4 players max
+
+/* Get cell position for a piece at track step N for player P */
+function getTrackCell(player: number, step: number): [number, number] | null {
+  if (step <= 0) return null // in yard/reserve
+  const track = buildPlayerTrack(PLAYER_RING_STARTS[player], player)
+  const idx   = step - 1
+  if (idx >= track.length) return [2, 2] // center (home)
   return track[idx]
 }
 
-/* ── Token colours ───────────────────────────────────────── */
-const TOKEN_FILL  = ['#e74c3c','#27ae60','#f39c12','#2c3e50']  // red,green,yellow,dark
-const TOKEN_EDGE  = ['#c0392b','#219a52','#d68910','#1a252f']
-const TOKEN_LABEL = ['Red','Green','Yellow','Black']
-const PLAYER_SAFE = [0, 10] // ring positions that are safe squares
-
-/* ── Safe squares on the board ───────────────────────────── */
-const SAFE_CELLS_SET = new Set<string>([
-  '0,0','0,4','4,0','4,4',   // corners
-  '2,2',                      // centre
-  '2,0','0,2','2,4','4,2',   // mid-edges
-])
-
-/* ── Dice face patterns (0 or 1) ─────────────────────────── */
-function rollStickDice(): number[] {
-  return [Math.random() < 0.5 ? 1 : 0, Math.random() < 0.5 ? 1 : 0,
-          Math.random() < 0.5 ? 1 : 0, Math.random() < 0.5 ? 1 : 0]
+/* â”€â”€ Cowrie shell dice â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+function rollCowries(count: number = 4): number[] {
+  return Array.from({ length: count }, () => (Math.random() < 0.5 ? 1 : 0))
 }
 
-function scoreDice(faces: number[]): number {
-  const up = faces.reduce((a: number, b: number) => a + b, 0)
-  if (up === 0) return 4
-  if (up === 4) return 8
-  return up
+function scoreCowries(faces: number[]): number {
+  const up = faces.reduce((a, b) => a + b, 0)
+  if (up === 0) return 4  // all down = 4
+  if (up === 4) return 8  // all up = 8 (bonus)
+  return up               // 1, 2, or 3
 }
 
-/* ── Game state ──────────────────────────────────────────── */
-interface GS {
-  pos:     number[][]   // [player][piece] 0=yard, 1-24=track, 25=HOME
-  entered: boolean[][]
-  turn:    number
-  dice:    number[]     // last rolled faces
-  roll:    number       // computed score
-  phase:   'roll' | 'move'
+/* â”€â”€ Game State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+interface Piece {
+  pos:     number   // track position (0 = yard, 1-N = track, 999 = home center)
+  entered: boolean  // whether piece has entered the board
+  home:    boolean  // whether piece reached center home
 }
 
-function initGS(np: number): GS {
+interface GameState {
+  boardType:  BoardType
+  gameMode:   GameMode
+  numPlayers: number
+  pieces:     Piece[][] // [player][pieceIdx]
+  turn:       number
+  diceRolled: boolean
+  diceFaces:  number[]
+  diceScore:  number
+  canMove:    boolean[] // which pieces can move this turn
+  phase:      'setup' | 'roll' | 'move'
+  moveTimeout: number   // seconds since dice roll (for reminder)
+}
+
+function initGame(boardType: BoardType, gameMode: GameMode, numPlayers: number): GameState {
+  const pieceCount = PIECES_COUNT[boardType]
+  const initPos = gameMode === 'center' ? 999 : 0 // center start vs yard start
+  
   return {
-    pos:     Array.from({ length: np }, () => Array(NUM_PIECES).fill(0)),
-    entered: Array.from({ length: np }, () => Array(NUM_PIECES).fill(false)),
-    turn: 0, dice: [], roll: 0, phase: 'roll',
+    boardType, gameMode, numPlayers,
+    pieces: Array.from({ length: numPlayers }, () => 
+      Array.from({ length: pieceCount }, () => ({
+        pos: initPos === 999 ? 999 : 0,
+        entered: gameMode === 'center',
+        home: false,
+      }))
+    ),
+    turn: 0, diceRolled: false, diceFaces: [], diceScore: 0,
+    canMove: [], phase: 'roll', moveTimeout: 0,
   }
 }
 
-/* ── Component ───────────────────────────────────────────── */
-export default function ChowkaBara({ config, onGameOver, onExit }: Props) {
-  const { play }       = useSound()
-  const canvasRef      = useRef<HTMLCanvasElement>(null)
-  const np             = 2
-  const [gs,  setGs]   = useState<GS>(() => initGS(np))
-  const [rolling, setRolling] = useState(false)
-  const [msg,  setMsg] = useState('Roll the dice to begin!')
-  const [done, setDone]= useState(false)
-  const [showHelp, setShowHelp] = useState(false)
-  const isBot   = config.mode === 'vs-bot'
-  const names   = [config.players[0], config.players[1] || (isBot ? 'Bot' : 'Player 2')]
+/* â”€â”€ Token colors â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+const PLAYER_COLORS = [
+  { name: 'Red',    fill: '#e74c3c', edge: '#c0392b', glow: 'rgba(231,76,60,0.5)' },
+  { name: 'Green',  fill: '#27ae60', edge: '#219a52', glow: 'rgba(39,174,96,0.5)' },
+  { name: 'Yellow', fill: '#f39c12', edge: '#d68910', glow: 'rgba(243,156,18,0.5)' },
+  { name: 'Black',  fill: '#2c3e50', edge: '#1a252f', glow: 'rgba(44,62,80,0.5)' },
+]
 
-  /* ── Canvas draw ────────────────────────────────────────── */
-  const draw = useCallback((state: GS) => {
+/* â”€â”€ Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+export default function ChowkaBara({ config, onGameOver, onExit }: Props) {
+  const { play } = useSound()
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  
+  /* Setup modal state */
+  const [setupDone, setSetupDone] = useState(false)
+  const [boardType, setBoardType] = useState<BoardType>('5mane')
+  const [gameMode,  setGameMode]  = useState<GameMode>('normal')
+  
+  /* Game state */
+  const [gs, setGs] = useState<GameState>(() => initGame('5mane', 'normal', 2))
+  const [msg, setMsg] = useState('Select game variant to begin')
+  const [gameOver, setGameOver] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
+  const [reminderPulse, setReminderPulse] = useState(false)
+  
+  const isBot = config.mode === 'vs-bot'
+  const numPlayers = isBot ? 2 : Math.min(config.players.length, 4)
+  const players = Array.from({ length: numPlayers }, (_, i) => 
+    config.players[i] || (i === 1 && isBot ? 'Bot' : `Player ${i + 1}`)
+  )
+
+  /* Start game after setup */
+  const startGame = () => {
+    const newGs = initGame(boardType, gameMode, numPlayers)
+    setGs(newGs)
+    setSetupDone(true)
+    setMsg(`${players[0]}'s turn â€” Roll the cowrie shells!`)
+  }
+
+  /* â”€â”€ Canvas Drawing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  const draw = useCallback((state: GameState) => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')!
-    const W = BOARD_SIZE, H = BOARD_SIZE
+    
+    ctx.clearRect(0, 0, BOARD_SIZE, BOARD_SIZE)
 
-    ctx.clearRect(0, 0, W, H)
-
-    /* === BOARD BACKGROUND — warm pine wood === */
-    const woodGrad = ctx.createLinearGradient(0, 0, W, H)
-    woodGrad.addColorStop(0.00, '#f0d9a0')
-    woodGrad.addColorStop(0.20, '#e8cd8a')
-    woodGrad.addColorStop(0.50, '#f0d9a0')
-    woodGrad.addColorStop(0.80, '#dfc07a')
-    woodGrad.addColorStop(1.00, '#e8cd8a')
+    /* === BOARD BACKGROUND â€” warm wooden board === */
+    const woodGrad = ctx.createLinearGradient(0, 0, BOARD_SIZE, BOARD_SIZE)
+    woodGrad.addColorStop(0.00, '#f5deb3')
+    woodGrad.addColorStop(0.25, '#e8c891')
+    woodGrad.addColorStop(0.50, '#f5deb3')
+    woodGrad.addColorStop(0.75, '#d4b896')
+    woodGrad.addColorStop(1.00, '#e8c891')
     ctx.fillStyle = woodGrad
-    ctx.fillRect(0, 0, W, H)
+    ctx.fillRect(0, 0, BOARD_SIZE, BOARD_SIZE)
 
-    /* Wood grain lines */
+    /* Wood grain texture */
     ctx.save()
-    ctx.globalAlpha = 0.06
+    ctx.globalAlpha = 0.08
     ctx.strokeStyle = '#8b5e1a'
-    ctx.lineWidth   = 1.2
-    for (let i = 0; i < 30; i++) {
-      const x = i * (W / 20)
+    ctx.lineWidth = 1
+    for (let i = 0; i < 40; i++) {
+      const x = (i / 40) * BOARD_SIZE
       ctx.beginPath()
       ctx.moveTo(x, 0)
-      ctx.bezierCurveTo(x + 5, H * 0.3, x - 3, H * 0.7, x + 2, H)
+      ctx.bezierCurveTo(x + 10, BOARD_SIZE * 0.4, x - 5, BOARD_SIZE * 0.7, x + 3, BOARD_SIZE)
       ctx.stroke()
     }
     ctx.restore()
 
     /* === ORNATE BORDER === */
-    // Outer frame
     ctx.strokeStyle = '#5c3a10'
-    ctx.lineWidth   = 8
-    ctx.strokeRect(4, 4, W - 8, H - 8)
-
-    // Gold inner frame
+    ctx.lineWidth = 10
+    ctx.strokeRect(5, 5, BOARD_SIZE - 10, BOARD_SIZE - 10)
+    
     ctx.strokeStyle = '#c8961e'
-    ctx.lineWidth   = 3
-    ctx.strokeRect(10, 10, W - 20, H - 20)
+    ctx.lineWidth = 3
+    ctx.strokeRect(12, 12, BOARD_SIZE - 24, BOARD_SIZE - 24)
 
-    // Decorative border pattern (repeating arcs mimicking carved wood)
-    ctx.save()
-    ctx.strokeStyle = '#a0721a'
-    ctx.lineWidth   = 1
-    ctx.globalAlpha = 0.7
-    const bPad = 14
-    const segments = 22
-    for (let s = 0; s < segments; s++) {
-      // Top
-      const x1t = bPad + s * ((W - bPad * 2) / segments)
-      const x2t = x1t + (W - bPad * 2) / segments
-      ctx.beginPath(); ctx.arc((x1t + x2t) / 2, bPad / 2 + 1, (x2t - x1t) * 0.4, 0, Math.PI); ctx.stroke()
-      // Bottom
-      ctx.beginPath(); ctx.arc((x1t + x2t) / 2, H - bPad / 2 - 1, (x2t - x1t) * 0.4, Math.PI, 0); ctx.stroke()
-    }
-    for (let s = 0; s < segments; s++) {
-      const y1 = bPad + s * ((H - bPad * 2) / segments)
-      const y2 = y1 + (H - bPad * 2) / segments
-      // Left
-      ctx.beginPath(); ctx.arc(bPad / 2 + 1, (y1 + y2) / 2, (y2 - y1) * 0.4, -Math.PI / 2, Math.PI / 2); ctx.stroke()
-      // Right
-      ctx.beginPath(); ctx.arc(W - bPad / 2 - 1, (y1 + y2) / 2, (y2 - y1) * 0.4, Math.PI / 2, -Math.PI / 2); ctx.stroke()
-    }
-    ctx.restore()
-
-    /* === 5×5 GRID LINES === */
+    /* === 5Ã—5 GRID === */
     ctx.strokeStyle = '#2c1a08'
-    ctx.lineWidth   = 2
+    ctx.lineWidth = 2.5
     for (let i = 0; i <= CELLS; i++) {
-      const x = i * CELL
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke()
-      ctx.beginPath(); ctx.moveTo(0, i * CELL); ctx.lineTo(W, i * CELL); ctx.stroke()
+      const pos = i * CELL
+      ctx.beginPath(); ctx.moveTo(pos, 0); ctx.lineTo(pos, BOARD_SIZE); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(0, pos); ctx.lineTo(BOARD_SIZE, pos); ctx.stroke()
     }
 
-    /* === X DIAGONALS IN EVERY CELL === */
+    /* === X DIAGONALS IN ALL CELLS === */
     ctx.strokeStyle = '#2c1a08'
-    ctx.lineWidth   = 1.5
+    ctx.lineWidth = 1.8
     for (let row = 0; row < CELLS; row++) {
       for (let col = 0; col < CELLS; col++) {
-        const cx = col * CELL
-        const cy = row * CELL
+        const x = col * CELL, y = row * CELL
         ctx.beginPath()
-        ctx.moveTo(cx, cy); ctx.lineTo(cx + CELL, cy + CELL)
-        ctx.stroke()
+        ctx.moveTo(x + 2, y + 2); ctx.lineTo(x + CELL - 2, y + CELL - 2); ctx.stroke()
         ctx.beginPath()
-        ctx.moveTo(cx + CELL, cy); ctx.lineTo(cx, cy + CELL)
-        ctx.stroke()
+        ctx.moveTo(x + CELL - 2, y + 2); ctx.lineTo(x + 2, y + CELL - 2); ctx.stroke()
       }
     }
 
-    /* === SAFE SQUARE HIGHLIGHTS === */
+    /* === GHATTA (SAFE ZONE) HIGHLIGHTS === */
     ctx.save()
-    for (const key of SAFE_CELLS_SET) {
+    for (const key of GHATTA_CELLS) {
       const [r, c] = key.split(',').map(Number)
-      ctx.globalAlpha = 0.18
-      ctx.fillStyle   = r === 2 && c === 2 ? '#e74c3c' : '#d4a843'
-      ctx.fillRect(c * CELL + 2, r * CELL + 2, CELL - 4, CELL - 4)
+      ctx.globalAlpha = 0.15
+      ctx.fillStyle = r === 2 && c === 2 ? '#f39c12' : '#4ecdc4'
+      ctx.fillRect(c * CELL + 3, r * CELL + 3, CELL - 6, CELL - 6)
     }
     ctx.restore()
 
-    /* === CENTRE HOME CIRCLE === */
-    const cx = CELL * 2 + CELL / 2, cy = CELL * 2 + CELL / 2
-    ctx.beginPath(); ctx.arc(cx, cy, CELL * 0.35, 0, Math.PI * 2)
-    const centreGrad = ctx.createRadialGradient(cx - 4, cy - 4, 2, cx, cy, CELL * 0.35)
-    centreGrad.addColorStop(0, '#f5d060')
-    centreGrad.addColorStop(1, '#c8961e')
-    ctx.fillStyle = centreGrad; ctx.fill()
-    ctx.strokeStyle = '#7a4a08'; ctx.lineWidth = 2.5; ctx.stroke()
-    // Star in centre
-    ctx.fillStyle = '#7a4a08'
-    ctx.font = `${CELL * 0.4}px serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-    ctx.fillText('★', cx, cy)
+    /* === CENTER HOME CIRCLE === */
+    const centerX = 2.5 * CELL, centerY = 2.5 * CELL
+    ctx.beginPath(); ctx.arc(centerX, centerY, CELL * 0.4, 0, Math.PI * 2)
+    const centerGrad = ctx.createRadialGradient(centerX - 5, centerY - 5, 2, centerX, centerY, CELL * 0.4)
+    centerGrad.addColorStop(0, '#ffd700')
+    centerGrad.addColorStop(1, '#d4af37')
+    ctx.fillStyle = centerGrad; ctx.fill()
+    ctx.strokeStyle = '#8b6914'; ctx.lineWidth = 3; ctx.stroke()
+    
+    /* Star in center */
+    ctx.fillStyle = '#8b6914'
+    ctx.font = `${CELL * 0.45}px serif`
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    ctx.fillText('â˜…', centerX, centerY)
 
-    /* === PLAYER PIECES ON BOARD === */
-    // Collect all on-board positions to detect stacking
-    const cellOccupants: Map<string, { player: number; piece: number }[]> = new Map()
-    for (let p = 0; p < np; p++) {
-      for (let i = 0; i < NUM_PIECES; i++) {
-        const pos = state.pos[p][i]
-        if (pos <= 0 || !state.entered[p][i]) continue
-        const cell = getCell(p, pos)
+    /* === PIECES ON BOARD === */
+    const cellOccupants = new Map<string, { player: number; piece: number; movable: boolean }[]>()
+    
+    for (let p = 0; p < state.numPlayers; p++) {
+      for (let i = 0; i < state.pieces[p].length; i++) {
+        const pc = state.pieces[p][i]
+        if (pc.home || pc.pos === 999) {
+          // Piece at center home
+          cellOccupants.set('2,2', (cellOccupants.get('2,2') || []).concat({ player: p, piece: i, movable: false }))
+          continue
+        }
+        if (pc.pos === 0 || !pc.entered) continue // in yard
+        
+        const cell = getTrackCell(p, pc.pos)
         if (!cell) continue
         const key = `${cell[0]},${cell[1]}`
-        if (!cellOccupants.has(key)) cellOccupants.set(key, [])
-        cellOccupants.get(key)!.push({ player: p, piece: i })
+        const movable = state.canMove[p * state.pieces[p].length + i] === true
+        cellOccupants.set(key, (cellOccupants.get(key) || []).concat({ player: p, piece: i, movable }))
       }
     }
 
-    // Draw tokens at their board positions
+    /* Draw pieces on board */
     for (const [key, occupants] of cellOccupants) {
       const [row, col] = key.split(',').map(Number)
-      const bx = col * CELL + CELL / 2
-      const by = row * CELL + CELL / 2
+      const cx = col * CELL + CELL / 2
+      const cy = row * CELL + CELL / 2
 
-      occupants.forEach(({ player, piece }, idx) => {
-        // Offset if multiple tokens on same cell
-        const offsets = [
-          [0, 0], [-10, -8], [10, -8], [0, 10],
-        ]
-        const [ox, oy] = offsets[idx] ?? [0, 0]
-        drawToken(ctx, bx + ox, by + oy, player,
-          /* isMovable */ state.phase === 'move' && player === state.turn &&
-          state.pos[player][piece] > 0 && canMoveG(state, player, piece),
-          /* isActive  */ state.phase === 'move' && player === state.turn,
-        )
-        // Piece number label
-        ctx.fillStyle = 'rgba(255,255,255,0.85)'
-        ctx.font      = 'bold 8px Cinzel,serif'
+      occupants.forEach(({ player, piece, movable }, idx) => {
+        const offsets = [[0, 0], [-12, -10], [12, -10], [-12, 10], [12, 10], [0, 12]]
+        const [ox, oy] = offsets[idx] || [0, 0]
+        drawPiece(ctx, cx + ox, cy + oy, player, movable && reminderPulse, movable)
+        
+        /* Piece number label */
+        ctx.fillStyle = 'rgba(255,255,255,0.9)'
+        ctx.font = 'bold 9px Cinzel,serif'
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-        ctx.fillText(String(piece + 1), bx + ox, by + oy)
+        ctx.fillText(String(piece + 1), cx + ox, cy + oy)
       })
     }
 
-    /* === YARD INDICATORS (pieces not yet entered) === */
-    // Draw yard areas in corners
-    const yardPositions: [number, [number, number]][] = [
-      [0, [0.15, 0.85]],   // P0 Red — bottom-left area
-      [1, [0.85, 0.15]],   // P1 Green — top-right area
+    /* === YARD INDICATORS (un-entered pieces) === */
+    const yardCorners: [number, [number, number]][] = [
+      [0, [0.12, 0.88]], // P0 â€” bottom-left
+      [1, [0.88, 0.12]], // P1 â€” top-right
+      [2, [0.12, 0.12]], // P2 â€” top-left
+      [3, [0.88, 0.88]], // P3 â€” bottom-right
     ]
-    for (const [pi, [cx2, cy2]] of yardPositions) {
-      const yardX = cx2 * W, yardY = cy2 * H
-      const inYard = state.pos[pi].filter((p, i) => p === 0 || !state.entered[pi][i]).length
+    
+    for (const [pi, [fx, fy]] of yardCorners) {
+      if (pi >= state.numPlayers) continue
+      const inYard = state.pieces[pi].filter(pc => pc.pos === 0 || !pc.entered).length
       if (inYard === 0) continue
+      
+      const yx = fx * BOARD_SIZE, yy = fy * BOARD_SIZE
       ctx.save()
-      ctx.globalAlpha = 0.25
-      ctx.beginPath(); ctx.arc(yardX, yardY, 28, 0, Math.PI * 2)
-      ctx.fillStyle = TOKEN_FILL[pi]; ctx.fill()
+      ctx.globalAlpha = 0.3
+      ctx.beginPath(); ctx.arc(yx, yy, 32, 0, Math.PI * 2)
+      ctx.fillStyle = PLAYER_COLORS[pi].fill; ctx.fill()
       ctx.restore()
-      ctx.fillStyle = TOKEN_FILL[pi]
-      ctx.font      = 'bold 11px Cinzel,serif'
+      
+      ctx.fillStyle = PLAYER_COLORS[pi].fill
+      ctx.font = 'bold 14px Cinzel,serif'
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-      ctx.fillText(`×${inYard}`, yardX, yardY)
+      ctx.fillText(`Ã—${inYard}`, yx, yy)
     }
 
-  }, [np])  // eslint-disable-line
+  }, [reminderPulse])
 
-  /* Draw token disc */
-  function drawToken(ctx: CanvasRenderingContext2D, x: number, y: number, player: number, movable: boolean, _active: boolean) {
-    const R    = CELL * 0.26
-    const fill = TOKEN_FILL[player]
-    const edge = TOKEN_EDGE[player]
+  /* Draw single piece token */
+  function drawPiece(ctx: CanvasRenderingContext2D, x: number, y: number, player: number, pulse: boolean, movable: boolean) {
+    const R = CELL * 0.28
+    const { fill, edge, glow } = PLAYER_COLORS[player]
 
     ctx.save()
-    if (movable) {
-      ctx.shadowColor = '#fbbf24'; ctx.shadowBlur = 14
+    
+    /* Pulsing glow for movable pieces */
+    if (pulse && movable) {
+      ctx.shadowColor = glow; ctx.shadowBlur = 18
     }
-    // Drop shadow
+    
+    /* Drop shadow */
     ctx.beginPath(); ctx.arc(x + 2, y + 3, R, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fill()
+    ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fill()
 
-    // Main disc gradient
+    /* Main disc gradient */
     const dGrad = ctx.createRadialGradient(x - R * 0.3, y - R * 0.3, R * 0.05, x, y, R)
-    dGrad.addColorStop(0, lighten(fill, 0.3))
+    dGrad.addColorStop(0, lighten(fill, 0.35))
     dGrad.addColorStop(0.6, fill)
-    dGrad.addColorStop(1,   edge)
+    dGrad.addColorStop(1, edge)
     ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2)
     ctx.fillStyle = dGrad; ctx.fill()
-    ctx.strokeStyle = edge; ctx.lineWidth = 2; ctx.stroke()
+    ctx.strokeStyle = edge; ctx.lineWidth = 2.5; ctx.stroke()
 
-    // Specular
+    /* Specular highlight */
     const sGrad = ctx.createRadialGradient(x - R * 0.35, y - R * 0.35, 0, x - R * 0.2, y - R * 0.2, R * 0.65)
-    sGrad.addColorStop(0, 'rgba(255,255,255,0.55)')
+    sGrad.addColorStop(0, 'rgba(255,255,255,0.6)')
     sGrad.addColorStop(1, 'rgba(255,255,255,0)')
     ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2)
     ctx.fillStyle = sGrad; ctx.fill()
 
-    // Pulsing ring for movable piece
+    /* Ring for movable piece */
     if (movable) {
-      ctx.beginPath(); ctx.arc(x, y, R + 4, 0, Math.PI * 2)
-      ctx.strokeStyle = 'rgba(251,191,36,0.8)'; ctx.lineWidth = 2; ctx.stroke()
+      ctx.beginPath(); ctx.arc(x, y, R + 5, 0, Math.PI * 2)
+      ctx.strokeStyle = pulse ? '#fbbf24' : 'rgba(251,191,36,0.6)'
+      ctx.lineWidth = pulse ? 3 : 2
+      ctx.stroke()
     }
+    
     ctx.restore()
   }
 
   function lighten(hex: string, amt: number): string {
     const num = parseInt(hex.slice(1), 16)
     const r = Math.min(255, ((num >> 16) & 0xff) + Math.round(255 * amt))
-    const g = Math.min(255, ((num >> 8)  & 0xff) + Math.round(255 * amt))
-    const b = Math.min(255, ((num)       & 0xff) + Math.round(255 * amt))
+    const g = Math.min(255, ((num >> 8) & 0xff) + Math.round(255 * amt))
+    const b = Math.min(255, (num & 0xff) + Math.round(255 * amt))
     return `rgb(${r},${g},${b})`
   }
 
-  /* Redraw whenever state changes */
-  useEffect(() => { draw(gs) }, [gs, draw])
+  /* Redraw on state change */
+  useEffect(() => { if (setupDone) draw(gs) }, [gs, draw, setupDone])
 
-  /* ── Game logic ──────────────────────────────────────────── */
-  function canMoveG(g: GS, pi: number, i: number): boolean {
-    const pos = g.pos[pi][i]
-    if (pos >= 25) return false
-    if (!g.entered[pi][i]) return g.roll === 1 || g.roll === 4
-    return pos + g.roll <= 25
+  /* â”€â”€ Game Logic â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  
+  /* Check if a piece can move */
+  function canPieceMove(state: GameState, player: number, pieceIdx: number): boolean {
+    const pc = state.pieces[player][pieceIdx]
+    if (pc.home) return false // already home
+    
+    const score = state.diceScore
+    
+    /* Mode-specific entry rules */
+    if (!pc.entered) {
+      if (state.gameMode === 'outer') {
+        // Outer entry mode: need 1 or 4 to enter
+        return score === 1 || score === 4
+      } else if (state.gameMode === 'center') {
+        // Center start mode: pieces already on board, need to exit center
+        return score > 0
+      } else {
+        // Normal mode: need 1 or 4 to enter
+        return score === 1 || score === 4
+      }
+    }
+    
+    /* Check if can move forward without overshooting */
+    const track = buildPlayerTrack(PLAYER_RING_STARTS[player], player)
+    const newPos = pc.pos + score
+    return newPos <= track.length + 1 // allow reaching home (center)
   }
 
+  /* Roll dice */
+  const rollDice = () => {
+    if (gs.phase !== 'roll' || gameOver) return
+    play('dice')
+    
+    const faces = rollCowries(4)
+    const score = scoreCowries(faces)
+    
+    /* Check which pieces can move */
+    const movable: boolean[] = []
+    for (let p = 0; p < gs.numPlayers; p++) {
+      for (let i = 0; i < gs.pieces[p].length; i++) {
+        movable[p * gs.pieces[p].length + i] = (p === gs.turn) && canPieceMove(gs, p, i)
+      }
+    }
+    
+    const hasValidMoves = movable.some(m => m)
+    
+    if (!hasValidMoves) {
+      setMsg(`Rolled ${score} â€” No valid moves! Next player.`)
+      play('error')
+      setTimeout(() => {
+        setGs(prev => ({
+          ...prev,
+          turn: (prev.turn + 1) % prev.numPlayers,
+          phase: 'roll',
+          diceRolled: false,
+          diceFaces: [],
+          diceScore: 0,
+          canMove: [],
+          moveTimeout: 0,
+        }))
+        setMsg(`${players[(gs.turn + 1) % numPlayers]}'s turn â€” Roll!`)
+      }, 1200)
+      return
+    }
+    
+    setGs(prev => ({
+      ...prev,
+      diceRolled: true,
+      diceFaces: faces,
+      diceScore: score,
+      canMove: movable,
+      phase: 'move',
+      moveTimeout: 0,
+    }))
+    
+    const bonus = score === 8 ? ' ðŸŽ‰ Bonus!' : ''
+    setMsg(`Rolled ${score}${bonus} â€” Select a piece to move`)
+  }
+
+  /* Move piece */
   const movePiece = (pieceIdx: number) => {
-    if (done || gs.phase !== 'move') return
+    if (gs.phase !== 'move' || gameOver) return
     const t = gs.turn
-    if (!canMoveG(gs, t, pieceIdx)) { play('error'); return }
+    const flatIdx = t * gs.pieces[t].length + pieceIdx
+    if (!gs.canMove[flatIdx]) {
+      play('error')
+      return
+    }
 
-    const ng: GS = {
+    const newState = {
       ...gs,
-      pos:     gs.pos.map(a => [...a]),
-      entered: gs.entered.map(a => [...a]),
+      pieces: gs.pieces.map((pp, pi) => pp.map((pc, i) => ({...pc}))),
     }
-    if (!ng.entered[t][pieceIdx]) {
-      ng.entered[t][pieceIdx] = true
-      ng.pos[t][pieceIdx]     = ng.roll
+    
+    const pc = newState.pieces[t][pieceIdx]
+    
+    /* Handle entry */
+    if (!pc.entered) {
+      pc.entered = true
+      pc.pos = gs.diceScore
+      play('move')
+      setMsg(`${players[t]} entered piece ${pieceIdx + 1}!`)
     } else {
-      ng.pos[t][pieceIdx] += ng.roll
-      if (ng.pos[t][pieceIdx] >= 25) ng.pos[t][pieceIdx] = 25
-    }
-
-    const sq = ng.pos[t][pieceIdx]
-    // Capture check — only on non-safe squares
-    if (sq < 25) {
-      const cell = getCell(t, sq)
-      const cellKey = cell ? `${cell[0]},${cell[1]}` : ''
-      if (!SAFE_CELLS_SET.has(cellKey)) {
-        for (let p2 = 0; p2 < np; p2++) {
-          if (p2 === t) continue
-          for (let j = 0; j < NUM_PIECES; j++) {
-            if (ng.pos[p2][j] === sq && ng.entered[p2][j]) {
-              ng.pos[p2][j]     = 0
-              ng.entered[p2][j] = false
-              play('capture')
-              setMsg(`⚔ ${names[t]} captured ${names[p2]}'s piece!`)
+      /* Move forward */
+      pc.pos += gs.diceScore
+      const track = buildPlayerTrack(PLAYER_RING_STARTS[t], t)
+      
+      /* Check if reached home */
+      if (pc.pos >= track.length) {
+        pc.home = true
+        pc.pos = 999
+        play('capture')
+        setMsg(`${players[t]}'s piece ${pieceIdx + 1} reached HOME! ðŸ `)
+      } else {
+        play('move')
+        
+        /* Capture check (only if not on Ghatta) */
+        const cell = getTrackCell(t, pc.pos)
+        if (cell && gs.gameMode === 'normal') {
+          const cellKey = `${cell[0]},${cell[1]}`
+          const isGhatta = GHATTA_CELLS.has(cellKey)
+          
+          if (!isGhatta) {
+            /* Check for opponent pieces at same position */
+            for (let p2 = 0; p2 < newState.numPlayers; p2++) {
+              if (p2 === t) continue
+              for (let j = 0; j < newState.pieces[p2].length; j++) {
+                const opp = newState.pieces[p2][j]
+                const oppCell = getTrackCell(p2, opp.pos)
+                if (oppCell && oppCell[0] === cell[0] && oppCell[1] === cell[1] && opp.entered && !opp.home) {
+                  /* CAPTURE! */
+                  opp.pos = 0
+                  opp.entered = false
+                  play('capture')
+                  setMsg(`âš” ${players[t]} captured ${players[p2]}'s piece!`)
+                }
+              }
             }
           }
         }
       }
     }
-    play('move')
 
-    if (ng.pos[t].every(p => p >= 25)) {
-      setGs(ng); setDone(true); play('win')
-      setTimeout(() => onGameOver({ winner: names[t], gameId: 'chowkabara', difficulty: config.difficulty }), 700)
+    /* Check win condition */
+    if (newState.pieces[t].every(p => p.home)) {
+      setGameOver(true)
+      play('win')
+      setTimeout(() => onGameOver({
+        winner: players[t],
+        gameId: 'chowkabara',
+        difficulty: config.difficulty,
+      }), 800)
       return
     }
 
-    ng.turn  = (ng.turn + 1) % np
-    ng.phase = 'roll'
-    ng.roll  = 0
-    ng.dice  = []
-    setGs(ng)
-    setMsg(`${names[ng.turn]}'s turn — Roll!`)
+    /* Next turn */
+    newState.turn = (newState.turn + 1) % newState.numPlayers
+    newState.phase = 'roll'
+    newState.diceRolled = false
+    newState.diceFaces = []
+    newState.diceScore = 0
+    newState.canMove = []
+    newState.moveTimeout = 0
+    setGs(newState)
+    setMsg(`${players[newState.turn]}'s turn â€” Roll!`)
   }
 
-  const doRoll = () => {
-    if (gs.phase !== 'roll' || rolling || done) return
-    setRolling(true); play('dice')
-    setTimeout(() => {
-      const faces = rollStickDice()
-      const r     = scoreDice(faces)
-      const ng: GS = { ...gs, dice: faces, roll: r, phase: 'move' }
-      const hasMoves = ng.pos[ng.turn].some((_, i) => canMoveG(ng, ng.turn, i))
-      if (!hasMoves) {
-        setMsg(`Rolled ${r} — no valid moves! Next player.`)
-        setGs({ ...ng, turn: (ng.turn + 1) % np, phase: 'roll', roll: 0, dice: [] })
-      } else {
-        setGs(ng)
-        const special = r === 8 ? ' 🎉 Bonus!' : r === 4 ? '' : ''
-        setMsg(`Rolled ${r}${special} — select a piece to move`)
-      }
-      setRolling(false)
-    }, 700)
-  }
-
-  // Bot
+  /* Reminder pulse timer */
   useEffect(() => {
-    if (!isBot || gs.turn !== 1 || done) return
+    if (gs.phase !== 'move' || gameOver) return
+    const interval = setInterval(() => {
+      setGs(prev => ({ ...prev, moveTimeout: prev.moveTimeout + 1 }))
+      if (gs.moveTimeout > 3 && gs.moveTimeout % 2 === 0) {
+        setReminderPulse(p => !p) // toggle pulse
+      }
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [gs.phase, gs.moveTimeout, gameOver])
+
+  /* Bot AI */
+  useEffect(() => {
+    if (!isBot || gs.turn !== 1 || gameOver || !setupDone) return
     if (gs.phase === 'roll') {
-      const t = setTimeout(doRoll, 600); return () => clearTimeout(t)
+      const t = setTimeout(rollDice, 800)
+      return () => clearTimeout(t)
     }
     if (gs.phase === 'move') {
       const t = setTimeout(() => {
-        const movable = gs.pos[1].map((_, i) => i).filter(i => canMoveG(gs, 1, i))
-        // Bot prefers to capture or send piece home
-        const capture = movable.find(i => {
-          const futurePos = gs.entered[1][i] ? gs.pos[1][i] + gs.roll : gs.roll
-          for (let p2 = 0; p2 < np; p2++) {
-            if (p2 === 1) continue
-            if (gs.pos[p2].includes(futurePos) && gs.entered[p2].some((e, j) => e && gs.pos[p2][j] === futurePos)) return true
-          }
-          return false
-        })
-        if (movable.length) movePiece(capture ?? movable[movable.length - 1])
-      }, 750)
+        const movable = gs.canMove.map((m, i) => m && Math.floor(i / gs.pieces[1].length) === 1 ? i % gs.pieces[1].length : -1).filter(i => i >= 0)
+        if (movable.length) movePiece(movable[Math.floor(Math.random() * movable.length)])
+      }, 1000)
       return () => clearTimeout(t)
     }
-  }, [gs, isBot, done])
+  }, [gs, isBot, gameOver, setupDone])
 
-  /* ── Board click handler ─────────────────────────────────── */
+  /* â”€â”€ Canvas Click Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (gs.phase !== 'move' || done || (isBot && gs.turn === 1)) return
-    const rect  = canvasRef.current!.getBoundingClientRect()
+    if (gs.phase !== 'move' || gameOver || (isBot && gs.turn === 1)) return
+    const rect = canvasRef.current!.getBoundingClientRect()
     const scale = BOARD_SIZE / rect.width
-    const mx    = (e.clientX - rect.left) * scale
-    const my    = (e.clientY - rect.top) * scale
-    const col   = Math.floor(mx / CELL)
-    const row   = Math.floor(my / CELL)
+    const mx = (e.clientX - rect.left) * scale
+    const my = (e.clientY - rect.top) * scale
+    const col = Math.floor(mx / CELL)
+    const row = Math.floor(my / CELL)
 
     const t = gs.turn
-    // Find which piece(s) of the current player are on this cell
-    for (let i = 0; i < NUM_PIECES; i++) {
-      if (!gs.entered[t][i] || gs.pos[t][i] <= 0) continue
-      const cell = getCell(t, gs.pos[t][i])
+    /* Find piece at clicked cell */
+    for (let i = 0; i < gs.pieces[t].length; i++) {
+      const pc = gs.pieces[t][i]
+      if (pc.home || pc.pos === 0 || !pc.entered) continue
+      const cell = getTrackCell(t, pc.pos)
       if (cell && cell[0] === row && cell[1] === col) {
-        movePiece(i); return
-      }
-    }
-
-    // Also check clicking yard areas for un-entered pieces
-    const yardAreas: Record<number, [number, number][]> = {
-      0: [[3, 0], [4, 0], [4, 1]],   // bottom-left
-      1: [[0, 3], [0, 4], [1, 4]],   // top-right
-    }
-    const yard = yardAreas[t]
-    if (yard?.some(([r, c]) => r === row && c === col)) {
-      // Find first un-entered movable piece
-      for (let i = 0; i < NUM_PIECES; i++) {
-        if (!gs.entered[t][i] && canMoveG(gs, t, i)) { movePiece(i); return }
+        movePiece(i)
+        return
       }
     }
   }
 
-  /* ── Piece buttons panel ─────────────────────────────────── */
-  const t        = gs.turn
-  const homePcs  = (pi: number) => gs.pos[pi].filter(p => p >= 25).length
+  /* â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  
+  /* Setup modal */
+  if (!setupDone) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4 relative z-10">
+        <div className="panel-parchment max-w-md w-full p-6 rounded-2xl">
+          <h2 className="heading-classical text-3xl text-center mb-4">ðŸŽ² Chowka Bara</h2>
+          <p className="text-sm text-center mb-6" style={{ color: 'rgba(245,240,232,0.6)', fontFamily: 'Crimson Text,serif' }}>
+            Traditional Indian cross-race board game
+          </p>
 
+          {/* Board Type */}
+          <div className="mb-5">
+            <label className="block text-xs mb-2 uppercase tracking-wider" style={{ color: '#d4a843', fontFamily: 'Cinzel,serif' }}>
+              Board Type
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              {(['5mane', '7mane'] as BoardType[]).map(bt => (
+                <button key={bt} onClick={() => setBoardType(bt)}
+                  className="py-3 px-4 rounded-lg transition-all"
+                  style={{
+                    background: boardType === bt ? 'rgba(212,168,67,0.25)' : 'rgba(42,21,9,0.7)',
+                    border: `1px solid ${boardType === bt ? '#d4a843' : 'rgba(212,168,67,0.15)'}`,
+                    color: boardType === bt ? '#fde68a' : 'rgba(245,240,232,0.6)',
+                    fontFamily: 'Cinzel,serif',
+                  }}>
+                  <div className="text-sm font-semibold">{bt === '5mane' ? '5 à²®à²¨à³†' : '7 à²®à²¨à³†'}</div>
+                  <div className="text-xs mt-1" style={{ opacity: 0.7 }}>
+                    {PIECES_COUNT[bt]} pieces/player
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Game Mode */}
+          <div className="mb-6">
+            <label className="block text-xs mb-2 uppercase tracking-wider" style={{ color: '#d4a843', fontFamily: 'Cinzel,serif' }}>
+              Game Mode
+            </label>
+            <div className="space-y-2">
+              {[
+                { id: 'outer' as GameMode, name: 'Outer Entry', desc: 'Start outside, enter one by one' },
+                { id: 'center' as GameMode, name: 'Center Start', desc: 'Start in center, race to home corner' },
+                { id: 'normal' as GameMode, name: 'Normal', desc: 'Classic rules with capture' },
+              ].map(gm => (
+                <button key={gm.id} onClick={() => setGameMode(gm.id)}
+                  className="w-full py-2.5 px-4 rounded-lg text-left transition-all"
+                  style={{
+                    background: gameMode === gm.id ? 'rgba(212,168,67,0.25)' : 'rgba(42,21,9,0.7)',
+                    border: `1px solid ${gameMode === gm.id ? '#d4a843' : 'rgba(212,168,67,0.15)'}`,
+                    color: gameMode === gm.id ? '#fde68a' : 'rgba(245,240,232,0.6)',
+                  }}>
+                  <div className="text-sm font-semibold" style={{ fontFamily: 'Cinzel,serif' }}>{gm.name}</div>
+                  <div className="text-xs mt-0.5" style={{ fontFamily: 'Crimson Text,serif', opacity: 0.7 }}>
+                    {gm.desc}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button onClick={startGame} className="btn-gold w-full py-3 text-base">
+            ðŸŽ® Start Game
+          </button>
+          <button onClick={onExit} className="btn-ghost w-full mt-2 py-2 text-sm">
+            â† Back to Hub
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  /* Main game UI */
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-2 relative z-10 select-none" style={{ fontFamily: 'Crimson Text, Georgia, serif' }}>
+    <div className="min-h-screen flex flex-col items-center justify-center p-2 relative z-10 select-none">
       {showHelp && <HowToPlay data={HOW_TO_PLAY.chowkabara} onClose={() => setShowHelp(false)} />}
 
       {/* Toolbar */}
-      <div className="flex items-center justify-between w-full max-w-[480px] mb-2">
-        <button onClick={onExit} className="btn-ghost text-xs py-1.5 px-3">← Exit</button>
-        <h2 style={{ fontFamily: 'Cinzel Decorative,serif', color: '#d4a843', fontSize: '1rem' }}>🎲 Chowka Bara</h2>
-        <button onClick={() => setShowHelp(true)} className="btn-ghost text-xs py-1.5 px-3">📜 How to Play</button>
+      <div className="flex items-center justify-between w-full max-w-[520px] mb-2">
+        <button onClick={onExit} className="btn-ghost text-xs py-1.5 px-3">â† Exit</button>
+        <h2 style={{ fontFamily: 'Cinzel Decorative,serif', color: '#d4a843', fontSize: '1rem' }}>
+          ðŸŽ² Chowka Bara â€” {boardType === '5mane' ? '5 à²®à²¨à³†' : '7 à²®à²¨à³†'} ({gameMode})
+        </h2>
+        <button onClick={() => setShowHelp(true)} className="btn-ghost text-xs py-1.5 px-3">ðŸ“œ Rules</button>
       </div>
 
       {/* Status message */}
-      <div className="text-sm mb-2 px-5 py-1.5 rounded-full text-center max-w-[420px]"
+      <div className="text-sm mb-2 px-5 py-2 rounded-full text-center max-w-[460px]"
            style={{
              fontFamily: 'Cinzel,serif', letterSpacing: '0.03em',
-             background: 'rgba(42,21,9,0.88)',
-             border: `1px solid ${t === 0 ? 'rgba(231,76,60,0.55)' : 'rgba(39,174,96,0.55)'}`,
-             color: t === 0 ? '#fca5a5' : '#86efac',
+             background: 'rgba(42,21,9,0.9)',
+             border: `2px solid ${PLAYER_COLORS[gs.turn].glow}`,
+             color: PLAYER_COLORS[gs.turn].fill,
+             boxShadow: `0 0 12px ${PLAYER_COLORS[gs.turn].glow}`,
            }}>
         {msg}
       </div>
 
-      <div className="flex gap-4 items-start justify-center w-full max-w-[520px]">
-
-        {/* ── BOARD ── */}
-        <div className="flex flex-col items-center gap-2">
-          <canvas
-            ref={canvasRef}
-            width={BOARD_SIZE} height={BOARD_SIZE}
-            className="rounded-lg cursor-pointer"
-            style={{
-              maxWidth: 'min(440px, 85vw)',
-              boxShadow: '0 12px 40px rgba(0,0,0,0.65), 0 0 0 3px #7a4a08, 0 0 0 5px rgba(212,168,67,0.35)',
-            }}
-            onClick={handleCanvasClick}
-          />
-          <p className="text-xs text-center" style={{ color: 'rgba(212,168,67,0.4)', fontFamily: 'Cinzel,serif', letterSpacing: '0.06em' }}>
-            Click a piece on the board to move it
-          </p>
+      {/* Reminder notification */}
+      {gs.phase === 'move' && gs.moveTimeout > 5 && (
+        <div className="text-xs mb-2 px-4 py-1.5 rounded-full animate-bounce"
+             style={{
+               background: 'rgba(251,191,36,0.2)',
+               border: '1px solid rgba(251,191,36,0.5)',
+               color: '#fbbf24',
+               fontFamily: 'Cinzel,serif',
+             }}>
+          â° Make your move! Click a highlighted piece.
         </div>
+      )}
 
-        {/* ── RIGHT PANEL: dice + pieces ── */}
-        <div className="flex flex-col gap-3 min-w-[130px]">
+      <div className="flex gap-4 items-start">
+        {/* Board */}
+        <canvas
+          ref={canvasRef}
+          width={BOARD_SIZE} height={BOARD_SIZE}
+          className="rounded-xl cursor-pointer"
+          style={{
+            maxWidth: 'min(480px, 88vw)',
+            boxShadow: '0 12px 48px rgba(0,0,0,0.7), 0 0 0 4px #8b5e2a, 0 0 0 6px rgba(212,168,67,0.3)',
+          }}
+          onClick={handleCanvasClick}
+        />
 
-          {/* Wooden dice display */}
-          <div className="rounded-xl p-3 text-center" style={{ background: 'rgba(26,12,6,0.88)', border: '1px solid rgba(212,168,67,0.25)' }}>
-            <div className="text-xs mb-2 tracking-widest uppercase" style={{ color: 'rgba(212,168,67,0.5)', fontFamily: 'Cinzel,serif' }}>
-              Dice
+        {/* Side panel */}
+        <div className="flex flex-col gap-3 min-w-[140px]">
+          {/* Dice */}
+          <div className="panel-parchment rounded-xl p-3 text-center">
+            <div className="text-xs mb-2 uppercase tracking-widest" style={{ color: '#d4a843', fontFamily: 'Cinzel,serif' }}>
+              Cowries
             </div>
-            <div className="flex gap-1.5 justify-center flex-wrap mb-2">
-              {(gs.dice.length ? gs.dice : [0, 0, 0, 0]).map((face, i) => (
-                <StickDice key={i} face={face} rolling={rolling} />
+            <div className="flex gap-1 justify-center mb-2">
+              {(gs.diceFaces.length ? gs.diceFaces : [0, 0, 0, 0]).map((f, i) => (
+                <CowrieShell key={i} faceUp={f === 1} />
               ))}
             </div>
-            {gs.roll > 0 && (
-              <div className="text-xl font-bold" style={{ color: '#fbbf24', fontFamily: 'Cinzel Decorative,serif' }}>
-                = {gs.roll}
-                {gs.roll === 8 && <span className="text-sm ml-1">🎉</span>}
-                {gs.roll === 4 && <span className="text-sm ml-1">✨</span>}
+            {gs.diceScore > 0 && (
+              <div className="text-2xl font-bold" style={{ color: '#f39c12', fontFamily: 'Cinzel Decorative,serif' }}>
+                = {gs.diceScore}
+                {gs.diceScore === 8 && ' ðŸŽ‰'}
               </div>
             )}
           </div>
 
-          {/* Players */}
-          {names.map((name, pi) => (
-            <div key={pi} className="rounded-xl p-3"
-                 style={{
-                   background: 'rgba(26,12,6,0.88)',
-                   border: `1px solid ${t === pi && !done ? (pi === 0 ? 'rgba(231,76,60,0.6)' : 'rgba(39,174,96,0.6)') : 'rgba(212,168,67,0.12)'}`,
-                   transition: 'border-color 0.3s',
-                 }}>
-              {/* Player header */}
-              <div className="flex items-center gap-2 mb-2">
-                <div className="w-4 h-4 rounded-full shadow-md flex-shrink-0"
-                     style={{ background: TOKEN_FILL[pi], border: `2px solid ${TOKEN_EDGE[pi]}` }} />
-                <span className="text-xs font-semibold truncate" style={{ color: TOKEN_FILL[pi], fontFamily: 'Cinzel,serif' }}>
-                  {name}
-                </span>
-                {homePcs(pi) === NUM_PIECES && (
-                  <span className="text-xs">🏆</span>
-                )}
-              </div>
-
-              {/* Home progress bar */}
-              <div className="flex gap-1 mb-2">
-                {Array.from({ length: NUM_PIECES }, (_, i) => (
-                  <div key={i} className="flex-1 h-2 rounded-full"
-                       style={{
-                         background: i < homePcs(pi) ? TOKEN_FILL[pi] : 'rgba(212,168,67,0.12)',
-                         border: '1px solid rgba(212,168,67,0.2)',
-                       }} />
-                ))}
-              </div>
-              <div className="text-xs text-center" style={{ color: 'rgba(212,168,67,0.35)', fontFamily: 'Cinzel,serif' }}>
-                {homePcs(pi)}/{NUM_PIECES} Home
-              </div>
-
-              {/* Piece buttons — click to move */}
-              <div className="grid grid-cols-2 gap-1 mt-2">
-                {gs.pos[pi].map((pos, i) => {
-                  const isHome     = pos >= 25
-                  const inYard     = pos === 0 || !gs.entered[pi][i]
-                  const movable    = t === pi && gs.phase === 'move' && canMoveG(gs, pi, i) && !done && !(isBot && pi === 1)
-                  return (
-                    <button key={i}
-                      onClick={() => movable && movePiece(i)}
-                      className="py-1.5 rounded-lg text-center transition-all"
-                      style={{
-                        background: isHome ? 'rgba(212,168,67,0.2)' : movable ? 'rgba(231,76,60,0.2)' : 'rgba(42,21,9,0.7)',
-                        border: `1px solid ${movable ? '#fbbf24' : isHome ? 'rgba(212,168,67,0.4)' : 'rgba(212,168,67,0.12)'}`,
-                        boxShadow: movable ? '0 0 10px rgba(251,191,36,0.4)' : 'none',
-                        cursor: movable ? 'pointer' : 'default',
-                        transform: movable ? 'scale(1.05)' : 'scale(1)',
-                      }}>
-                      <div style={{ fontSize: '10px', color: isHome ? '#fbbf24' : TOKEN_FILL[pi] }}>
-                        {TOKEN_LABEL[pi][0]}{i + 1}
-                      </div>
-                      <div style={{ fontSize: '9px', color: 'rgba(212,168,67,0.4)', fontFamily: 'Cinzel,serif' }}>
-                        {isHome ? 'Home' : inYard ? 'Yard' : `Sq${pos}`}
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-
           {/* Roll button */}
-          {gs.phase === 'roll' && (gs.turn === 0 || !isBot) && !done && (
-            <button
-              onClick={doRoll}
-              disabled={rolling}
-              className="btn-gold py-3 text-sm"
-              style={{ opacity: rolling ? 0.7 : 1 }}
-            >
-              {rolling ? (
-                <span className="inline-flex items-center gap-2">
-                  <span className="animate-spin">⟳</span> Rolling…
-                </span>
-              ) : '🎲 Roll Dice'}
+          {gs.phase === 'roll' && !gameOver && !(isBot && gs.turn === 1) && (
+            <button onClick={rollDice} className="btn-gold py-3 text-sm">
+              ðŸŽ² Roll Cowries
             </button>
           )}
-          {isBot && gs.turn === 1 && !done && (
-            <div className="text-xs text-center py-2" style={{ color: 'rgba(212,168,67,0.4)', fontFamily: 'Cinzel,serif' }}>
-              🤖 Bot thinking…
-            </div>
-          )}
+
+          {/* Players */}
+          {players.map((name, pi) => {
+            const homeCount = gs.pieces[pi].filter(p => p.home).length
+            const totalPieces = gs.pieces[pi].length
+            return (
+              <div key={pi} className="rounded-xl p-3"
+                   style={{
+                     background: 'rgba(26,12,6,0.9)',
+                     border: `2px solid ${gs.turn === pi && !gameOver ? PLAYER_COLORS[pi].glow : 'rgba(212,168,67,0.1)'}`,
+                     transition: 'all 0.3s',
+                   }}>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-4 h-4 rounded-full" style={{ background: PLAYER_COLORS[pi].fill }} />
+                  <span className="text-xs font-semibold truncate" style={{ color: PLAYER_COLORS[pi].fill, fontFamily: 'Cinzel,serif' }}>
+                    {name}
+                  </span>
+                  {homeCount === totalPieces && <span>ðŸ†</span>}
+                </div>
+                <div className="flex gap-1">
+                  {Array.from({ length: totalPieces }, (_, i) => (
+                    <div key={i} className="flex-1 h-2 rounded-full"
+                         style={{
+                           background: i < homeCount ? PLAYER_COLORS[pi].fill : 'rgba(212,168,67,0.1)',
+                         }} />
+                  ))}
+                </div>
+                <div className="text-xs text-center mt-1" style={{ color: 'rgba(212,168,67,0.4)', fontFamily: 'Cinzel,serif' }}>
+                  {homeCount}/{totalPieces} Home
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
   )
 }
 
-/* ── Stick dice SVG component ────────────────────────────── */
-function StickDice({ face, rolling }: { face: number; rolling: boolean }) {
+/* â”€â”€ Cowrie Shell Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+function CowrieShell({ faceUp }: { faceUp: boolean }) {
   return (
     <div
-      className={`relative rounded transition-transform ${rolling ? 'animate-spin' : ''}`}
       style={{
-        width: 22, height: 44,
-        background: 'linear-gradient(160deg, #8b5e2a 0%, #5c3010 60%, #3a1a08 100%)',
-        border: '1.5px solid #c8961e',
-        borderRadius: 4,
-        boxShadow: '1px 2px 6px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.12)',
+        width: 20, height: 20,
+        borderRadius: '50%',
+        background: faceUp
+          ? 'radial-gradient(circle at 30% 30%, #fff8dc, #daa520)'
+          : 'radial-gradient(circle at 30% 30%, #8b7355, #5c4033)',
+        border: `2px solid ${faceUp ? '#b8860b' : '#3e2723'}`,
+        boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
       }}
     >
-      {face === 1 ? (
+      {faceUp && (
         <div style={{
-          width: 8, height: 8, borderRadius: '50%',
-          background: 'radial-gradient(circle at 35% 35%, #fffde7, #f5d060)',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
-        }} />
-      ) : (
-        <div style={{
-          width: 8, height: 8, borderRadius: '50%',
-          background: 'rgba(255,255,255,0.05)',
-          border: '1px solid rgba(200,150,30,0.25)',
+          width: 8, height: 8,
+          borderRadius: '50%',
+          background: 'rgba(139,115,85,0.3)',
         }} />
       )}
     </div>

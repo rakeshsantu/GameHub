@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { GameInfo, Player, MatchOpponent } from '../types'
 
-const API = (import.meta.env.VITE_API_URL as string) || '/api'
+const API = import.meta.env?.VITE_API_URL ?? '/api'
 
 async function mmFetch(action: string, gameId: string, token: string) {
   const res = await fetch(`${API}/matchmaking.php`, {

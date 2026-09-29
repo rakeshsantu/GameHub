@@ -1,9 +1,9 @@
 import { useState, useCallback } from 'react'
-import { AuthSession, Player } from '../types'
+import { AuthSession, Player, GameRanking, GameResultRecord } from '../types'
 import { loadGuestSession, clearGuestSession, GuestSession } from './useGuestSession'
 
 // ─── API base URL ─────────────────────────────────────────────────────────
-const API = (import.meta.env.VITE_API_URL as string) || '/api'
+const API = import.meta.env?.VITE_API_URL ?? '/api'
 
 // ─── Persistence ──────────────────────────────────────────────────────────
 const SESSION_KEY = 'gh_auth_session'
@@ -239,13 +239,13 @@ export function useAuth() {
 
   // ── Refresh profile ───────────────────────────────────────────────────────
   const refreshProfile = useCallback(async (): Promise<{
-    player: Player; gameRankings: unknown[]; recentResults: unknown[]
+    player: Player; gameRankings: GameRanking[]; recentResults: GameResultRecord[]
   } | null> => {
     if (!session?.token) return null
     setLoading(true); setError(null)
     try {
       const data = await apiFetch<{
-        player: Player; gameRankings: unknown[]; recentResults: unknown[]
+        player: Player; gameRankings: GameRanking[]; recentResults: GameResultRecord[]
       }>('/me.php', { method: 'GET' }, session.token)
       persist({ ...session, player: data.player })
       return data
